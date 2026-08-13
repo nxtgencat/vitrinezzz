@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import { db } from "./lib/db";
 import { logger } from "./lib/logger";
+import { applyMigrations } from "./lib/migrate";
+
+applyMigrations(db);
 
 export const app = new Hono();
 

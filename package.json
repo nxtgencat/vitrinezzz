@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "bun --watch index.ts",
     "typecheck": "bunx tsc --noEmit",
-    "ci": "bun run typecheck"
+    "db:generate": "bunx drizzle-kit generate",
+    "verify:db": "bun run scripts/verify-db.ts",
+    "ci": "bun run typecheck && bun run verify:db"
   },
   "devDependencies": {
     "@types/bun": "latest",

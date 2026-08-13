@@ -22,6 +22,11 @@ document line, CASCADE child · `[FACT]` append-only event record, trigger-prote
 `[SNAP]` derived projection · `[STAGING]` disposable customer state · `[MEDIA]` ·
 `[SYS]` · `[AUTH]` better-auth owned.
 
+**FK enforcement**: `PRAGMA foreign_keys = ON` is set at boot on the single shared
+connection (`architecture.md` §4.1) — `bun:sqlite` defaults it OFF, so without the
+pragma every `ON DELETE RESTRICT`/`CASCADE` below would be decorative. `verify-db`
+asserts the pragma reads back `1`.
+
 **Immutability triggers**: `BEFORE UPDATE` and `BEFORE DELETE` raising `ABORT` exist on
 every `[FACT]` table (`stock_movements`, `payments`, `order_events`, `audit_events`).
 Created once, in the initial migration. Corrections are new rows, never edits.
@@ -93,7 +98,9 @@ idx `(customerId)`; FK CASCADE on customer delete.
 `variantId`, `outletId`, `batchId`, `quantity`, `lastMovementId`, `updatedAt`.
 Composite PK `(variantId, outletId, batchId)`. Cache of
 `SUM(stock_movements.delta)` per key — display reads only, **never** a decision gate
-(`architecture.md` §4.6).
+(`architecture.md` §4.6). `lastMovementId` is a denormalized pointer into
+`stock_movements` — **no FK**, exactly like `stock_movements.sourceId` (§4.2); a
+projection must never constrain or be constrained by the fact table it derives from.
 
 ### 4.2 stock_movements `[FACT]`
 `id`, `variantId`, `outletId`, `batchId`, `delta` (signed), `reason`
@@ -283,7 +290,7 @@ work), `createdAt`, `expiresAt` (reaped 24h after `createdAt`). PK `id`; UNIQUE
 
 ## 13. Auth — 4 tables `[AUTH]`
 
-Owned by better-auth, defined in `src/db/schema/auth.ts` purely so `drizzle-kit` can
+Owned by better-auth, defined in `db/schema/auth.ts` purely so `drizzle-kit` can
 manage their migrations alongside everything else. Column names are better-auth's
 exact documented names (camelCase), zero remapping. All ids TEXT; timestamps INTEGER
 ms; `emailVerified` INTEGER boolean.

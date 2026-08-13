@@ -78,10 +78,15 @@ Sections below are the "how" for every commitment in `task.md` §3.
 
 One Bun process hosts everything: the Hono HTTP router, the WebSocket hub, the
 `Bun.WebView` PDF printer, and every `Bun.cron` job. One `bun:sqlite` connection,
-opened once at boot with `PRAGMA journal_mode = WAL`, is shared by the whole process
-through a single Drizzle instance. There is no connection pool because there is exactly
-one connection — `bun:sqlite` is synchronous and single-writer by nature, so a pool
-would add coordination overhead for zero concurrency gain.
+opened once at boot, is shared by the whole process
+through a single Drizzle instance. Boot sequence on the connection, in order:
+`PRAGMA journal_mode = WAL` (persisted in the file), `PRAGMA foreign_keys = ON`
+(`bun:sqlite` defaults it OFF — without this every FK in `schema.md` is decorative),
+then `migrate(db, { migrationsFolder })` from `drizzle-orm/bun-sqlite/migrator`
+(§6) — idempotent, applies only pending migrations, so the process always starts
+against the schema the code expects. There is no connection pool because there is
+exactly one connection — `bun:sqlite` is synchronous and single-writer by nature, so
+a pool would add coordination overhead for zero concurrency gain.
 
 **T1 — every mutating operation runs inside `withTx`, whose callback is fully
 synchronous — no `await` anywhere inside it, enforced by the type system:**
@@ -514,9 +519,9 @@ customer, not a server error), `requireCustomer` (auto-provisioned via the bette
 customer route runs).
 
 **Bootstrap admin**: created on first boot from `SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD`
-via `auth.api.signUpEmail`, seeded with an `Admin` role (all nine capabilities) if one
-doesn't exist, `staff_profiles.isProtected = true`. Delete/deactivate → `409
-protected_resource`. Idempotent — runs every boot, acts once.
+via `auth.api.signUpEmail` (`lib/auth.ts`, phase 2), seeded with an `Admin` role (all
+nine capabilities) if one doesn't exist, `staff_profiles.isProtected = true`.
+Delete/deactivate → `409 protected_resource`. Idempotent — runs every boot, acts once.
 
 **Rate limiting**: in-memory fixed-window per IP — `/api/auth/*` 30/min,
 `/api/storefront/checkout` 5/min. Over → `429 RATE_LIMITED`. A single process means a
@@ -526,6 +531,7 @@ single in-memory map is sufficient; no external cache needed.
 
 | Rule | Convention |
 |---|---|
+| Layout | Root-level dirs only — `lib/` (infrastructure: db, logger, idempotency, errors, money, doc-number, pdf, backup, auth), `db/schema/` (one Drizzle schema file per `schema.md` domain group §3–§13), `db/migrations/` (drizzle-kit SQL), `scripts/` (verify-*/smoke-*). No `src/` wrapper; docs that said `src/` were corrected in phase 1. |
 | Primary key | `id` TEXT = full `Bun.randomUUIDv7()`, never truncated (time-ordered; truncation collides within a time bucket). `settings` is the singleton exception, fixed id `'singleton'`. |
 | Human document numbers | `<PREFIX>-<7 base32 chars>` via `lib/doc-number.ts`, own UNIQUE column, never derived from `id`. Prefixes: `OR` orders, `INV` invoices, `BL` bills, `TR` transfers, `AJ` adjustments, `RT` returns, `SH` shipments, `PY` payments. |
 | Money | INTEGER paise; every money column ends in `Paise`. No REAL column anywhere. |
@@ -634,6 +640,8 @@ re-checked before any `bun add` re-resolution in §2 changes it.
 | `bun:sqlite` connection | `new Database(path)`; `db.run("PRAGMA journal_mode = WAL;")` at boot | One `Database` = one connection, no pooling. |
 | Drizzle transaction | `db.transaction((tx) => fn(tx), { behavior: "immediate" })` | Issues `BEGIN IMMEDIATE`; on the resolved 0.45.x sync driver it returns `T` directly — `withTx` is the async wrapper that routes `await` (§4.1). No `.sync()` variant exists. |
 | Drizzle bun-sqlite construction | `drizzle(sqlite)` from `drizzle-orm/bun-sqlite` | Returns `BunSQLiteDatabase & { $client: TClient }` — `$client` is the raw `bun:sqlite` `Database`; annotating the variable with the bare `BunSQLiteDatabase` type drops `$client`, so the inferred type must be kept. |
+| Drizzle migrations | `migrate(db, { migrationsFolder })` from `drizzle-orm/bun-sqlite/migrator` | Synchronous, idempotent; tracks applied migrations in `__drizzle_migrations` by `folderMillis` from `meta/_journal.json`, applies the rest inside one transaction. Runs at boot (§4.1) and inside `verify-db`. |
+| Drizzle sqlite schema | `sqliteTable(name, { columns }, (t) => [...])` from `drizzle-orm/sqlite-core` | Third arg is an array of `index`/`uniqueIndex`/`primaryKey`/`foreignKey` builders; `text(..., { mode: "json" })` + `$type<T>()` for JSON columns; `references(() => col, { onDelete: "restrict" | "cascade" })` for FKs. Partial unique: `uniqueIndex(n).on(cols).where(sql`…`)`. |
 | pino singleton | `import pino from "pino"`; `const logger = pino()` | Resolved 10.x is CJS (`export = pino`) — default import requires `esModuleInterop` (set in tsconfig, §2). `.child({ module })` per subsystem. |
 | Hono app export | `export type AppType = typeof app` | Consumed by `hc<AppType>()` on both frontends. |
 | `zValidator` error hook | `zValidator("json", schema, (result, c) => { if (!result.success) throw new HTTPException(400, { cause: result.error }); })` | Does **not** throw by default — the hook must throw explicitly, or invalid input silently 200s. Issues at `err.cause.issues`. |

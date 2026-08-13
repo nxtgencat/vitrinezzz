@@ -35,7 +35,8 @@ the route boundary only · **pino** — zero `console.*`, zero exemptions ·
 Redis, no broker · **PDF = in-process `Bun.WebView`** (chrome backend, CDP
 `Page.printToPDF`), printing **client-supplied HTML only** — no backend template, no
 external render service, no PDF library · **Media = `Bun.S3` or local disk**, `Bun.Image`
-for thumbnails · **Money = INTEGER paise, tax = INTEGER percent** — zero floats in `src/`.
+for thumbnails · **Money = INTEGER paise, tax = INTEGER percent** — zero floats in the
+codebase (`lib/`, `db/`, `scripts/`; no `src/` wrapper, `architecture.md` §4.15).
 
 ## 3. Architectural commitments (not re-litigated)
 
@@ -55,7 +56,8 @@ for thumbnails · **Money = INTEGER paise, tax = INTEGER percent** — zero floa
 4. **Never trust the client.** Prices, totals, tax, and stock are recomputed inside the
    deciding transaction every time. The complete list of client-originable values is
    closed and enumerated once. (`architecture.md` §4.4)
-5. **Money is INTEGER paise, tax is INTEGER percent.** Zero floats anywhere in `src/`.
+5. **Money is INTEGER paise, tax is INTEGER percent.** Zero floats anywhere in the
+   codebase.
 6. **RBAC enforced in the service layer**, not just the route — unbypassable from a
    cron job, a webhook, or a future direct caller. Nine capabilities. Protected
    bootstrap admin. (`architecture.md` §4.14)
