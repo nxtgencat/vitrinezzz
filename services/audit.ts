@@ -1,5 +1,7 @@
 import { randomUUIDv7 } from "bun";
+import { and, count, desc, eq, gte, lte } from "drizzle-orm";
 import { auditEvents } from "../db/schema/facts";
+import { db } from "../lib/db";
 import type { Tx } from "../lib/db";
 
 export const AUDIT_ENTITY_TYPES = [
@@ -45,4 +47,41 @@ export function writeAuditEvent(tx: Tx, input: AuditEventInput): void {
       createdAt: Date.now(),
     })
     .run();
+}
+
+export type AuditEventRow = typeof auditEvents.$inferSelect;
+
+export type AuditFilter = {
+  entityType?: string;
+  entityId?: string;
+  actorId?: string;
+  from?: number;
+  to?: number;
+  page: number;
+  pageSize: number;
+};
+
+/**
+ * Read side for `GET /api/audit` (`api.md` §10). Deterministic
+ * `(createdAt DESC, id DESC)` — newest first, id tie-break. `from`/`to` are
+ * epoch-ms integers.
+ */
+export function listAuditEvents(filter: AuditFilter): { rows: AuditEventRow[]; total: number } {
+  const conditions = [];
+  if (filter.entityType) conditions.push(eq(auditEvents.entityType, filter.entityType));
+  if (filter.entityId) conditions.push(eq(auditEvents.entityId, filter.entityId));
+  if (filter.actorId) conditions.push(eq(auditEvents.actorId, filter.actorId));
+  if (filter.from !== undefined) conditions.push(gte(auditEvents.createdAt, filter.from));
+  if (filter.to !== undefined) conditions.push(lte(auditEvents.createdAt, filter.to));
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const total = db.select({ n: count() }).from(auditEvents).where(where).get()!.n;
+  const rows = db
+    .select()
+    .from(auditEvents)
+    .where(where)
+    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id))
+    .limit(filter.pageSize)
+    .offset((filter.page - 1) * filter.pageSize)
+    .all();
+  return { rows, total };
 }

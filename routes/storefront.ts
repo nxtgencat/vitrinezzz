@@ -18,6 +18,7 @@ import {
   getAddress,
   listAddresses,
   listCart,
+  getWishlistItem,
   listWishlist,
   upsertCartItem,
 } from "../services/cart";
@@ -174,6 +175,14 @@ storefrontRoutes.delete("/storefront/cart/:variantId", paramValidator(variantIdP
 storefrontRoutes.get("/storefront/wishlist", async (c) => {
   const customer = await requireCustomer(c.req.raw.headers);
   return c.json({ data: listWishlist(customer.customerId) });
+});
+
+storefrontRoutes.get("/storefront/wishlist/:variantId", paramValidator(variantIdParam), async (c) => {
+  const customer = await requireCustomer(c.req.raw.headers);
+  const { variantId } = c.req.valid("param");
+  const item = getWishlistItem(customer.customerId, variantId);
+  if (!item) throw new HTTPException(404, { message: "not_found" });
+  return c.json(item);
 });
 
 storefrontRoutes.post("/storefront/wishlist", jsonValidator(wishlistPostSchema), async (c) => {

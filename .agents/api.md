@@ -24,6 +24,13 @@ idempotency_key_required`. Reads never require it. Exceptions: `/api/auth/*`
 (`architecture.md` §4.8) — payload `{ type, entityId, at }`; clients refetch that
 entity.
 
+**Path-cell shorthand** (how `verify-routes` expands rows): a path cell may carry
+comma-separated paths; a trailing `‡` is the realtime marker (ignored by the
+verifier); `[/:param]` expands by method — GET → base + `/:param` (list + detail),
+POST → base only (create), DELETE → `/:param` only (delete one). The §1 auth rows
+collapse onto the single mounted wildcard pair `GET/POST /api/auth/*`; `WS` rows
+map to the GET upgrade.
+
 **Error envelope, lists, filters, money-on-the-wire**: see `architecture.md` §4.13 —
 not restated per route below.
 
@@ -44,17 +51,17 @@ Staff accounts are created via §2 (`POST /api/staff`), never via self-service s
 
 | Method | Path | Guard | Idem | Notes |
 |---|---|---|---|---|
-| GET | `/api/settings` | S | – | Singleton settings row. |
-| PUT | `/api/settings` | R(canManageStaff) | I | `{ orgName?, gstin?, currency?, timezone?, fiscalYearStartMonth?, defaultOutletId? }`; `defaultOutletId` must be an active outlet. |
+| GET | `/api/settings` | S | – | Singleton settings row; `404` when never written (the singleton is upserted by the first `PUT`, not seeded at boot). |
+| PUT | `/api/settings` | R(canManageStaff) | I | `{ orgName?, gstin?, currency?, timezone?, fiscalYearStartMonth?, defaultOutletId? }` — upserts the singleton; the first write requires `orgName` + `fiscalYearStartMonth` (else `400`), `currency`/`timezone` default `INR`/`Asia/Kolkata`. `defaultOutletId` must be an active outlet (`404` missing, `409 invalid_transition` inactive); `null` clears it. |
 | GET | `/api/outlets` | S | – | Filter `active`. |
 | POST | `/api/outlets` | R(canManageStaff) | I | `{ name }`. |
 | PUT | `/api/outlets/:id` | R(canManageStaff) | I | `{ name?, isActive? }`; deactivating `settings.defaultOutletId` → `409 invalid_transition`. |
 | GET | `/api/roles` | S | – | Filter `scope`. |
 | POST | `/api/roles` | R(canManageStaff) | I | `{ name, capabilities[], scope, outletId? }`; capability set validated against the closed 9; `scope:'outlet'` requires `outletId`; duplicate `name` → `409`. |
-| PUT | `/api/roles/:id` | R(canManageStaff) | I | Same shape. |
-| GET | `/api/staff` | S | – | Filters `outletId`, `roleId`, `active`. |
-| POST | `/api/staff` | R(canManageStaff) | I | `{ email, password, name, outletId, roleId, phone? }` — creates the auth user + profile in one transaction; duplicate email → `409`. |
-| PUT | `/api/staff/:id` | R(canManageStaff) | I | `{ outletId?, roleId?, phone?, isActive? }`. |
+| PUT | `/api/roles/:id` | R(canManageStaff) | I | Same shape; duplicate `name` (self-excluding) → `409 duplicate_role`. No role is protected — the `Admin` role is editable like any other (the bootstrap profile is what `isProtected` guards). |
+| GET | `/api/staff` | S | – | Filters `outletId`, `roleId`, `active`; rows join the auth user's `name`/`email`. |
+| POST | `/api/staff` | R(canManageStaff) | I | `{ email, password, name, outletId, roleId, phone? }` — creates the auth user (better-auth's own transaction, outside the idempotency tx) then the profile + audit row in the idempotency transaction; duplicate email → `409 duplicate_email`. An outlet-scoped role requires `outletId` = the role's outlet (`400 outlet mismatch`). |
+| PUT | `/api/staff/:id` | R(canManageStaff) | I | `{ outletId?, roleId?, phone?, isActive? }`; `isActive: 0` on an `isProtected` profile → `409 protected_resource`. Self-downgrade (an actor editing their own profile) is allowed. |
 | POST | `/api/staff/:id/deactivate` | R(canManageStaff) | I | `isProtected` row → `409 protected_resource`. |
 
 Bootstrap admin: created at first boot from `SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD`
@@ -159,7 +166,7 @@ with an auto-seeded `Admin` role (all 9 capabilities); `isProtected = true`.
 | GET/POST/DELETE | `/api/storefront/wishlist[/:variantId]` | C | I on POST/DELETE | |
 | GET/POST | `/api/storefront/addresses[/:id]` | C | I on POST | Own rows only. |
 | POST | `/api/storefront/checkout` ‡ | C | I (rate-limited 5/min) | Body `{ custAddressId, paymentMode }` **only — no prices, no cart snapshot**. Re-reads the cart, re-prices every line from `variants`, re-derives stock in-tx (`architecture.md` §4.11). `cod` confirms + issues immediately and clears the cart; `gateway` pre-gates stock but allocates nothing — order stays `pending`, invoice stays `draft`, a `pending` payment row is inserted and its `gatewayPaymentId` is returned as `checkoutReference`; the cart is kept until the phase-8 webhook confirms. On any gate failure, the whole transaction rolls back and the cart is untouched. Storefront outlet = `settings.defaultOutletId` else first active outlet; none → 500 `no outlet configured`. |
-| GET | `/api/storefront/orders[/:id]` | C | – | Own orders only (404 on others'); detail includes `order_events` timeline. |
+| GET | `/api/storefront/orders[/:id]` | C | – | List own orders (any status); detail returns own orders only (404 on others'), including the `order_events` timeline. |
 | POST | `/api/storefront/orders/:id/cancel` ‡ | C | I | `pending` only; voids the linked draft invoice. |
 | POST | `/api/storefront/returns` | C | I | Draft sales return on the customer's own order whose invoice is `issued` (order must be `confirmed`, else `409 invalid_transition`; invoice not `issued` → 404). Lines `{ originalItemId, quantity }` must reference the invoice's own line (404 otherwise), `quantity` ≤ original (400), custom-line returns rejected (400). Caps enforced at staff-side confirm (§8). |
 
@@ -171,8 +178,8 @@ The client never treats a gateway redirect as success — it polls/subscribes to
 | Method | Path | Guard | Notes |
 |---|---|---|---|
 | WS | `/api/ws` | S \| C | Upgrade requires a valid session. Subscribe frame: `{ op: "subscribe", topics: [...] }`. Topics: `order:{id}`, `invoice:{id}`, `stock:{outletId}` — authorized per topic (`architecture.md` §4.8). |
-| GET | `/api/health` | * | Never `500` for a reportable DB condition — a degraded-but-queryable DB reports `{ status: "degraded" }` at `200`, so uptime monitors alert on body content. Returns `{ status, dbTimeMs, ledgerCounts }`. |
-| GET | `/api/audit` | R(canManageStaff) | Reads `audit_events`. Filters `entityType`, `entityId`, `actorId`, date range. |
+| GET | `/api/health` | * | Never `500` for a reportable DB condition — a degraded-but-queryable DB reports `{ status: "degraded" }` at `200`, so uptime monitors alert on body content. Returns `{ status, dbTimeMs, ledgerCounts }` with `ledgerCounts: { stockMovements, payments, orderEvents, auditEvents }`; each ledger is counted in its own try/catch so a missing/corrupt table drops that key (partial counts) without failing the request. |
+| GET | `/api/audit` | R(canManageStaff) | Reads `audit_events`, newest first, deterministic tie-break on `id`. Filters `entityType` (closed enum), `entityId`, `actorId` (uids), `from`/`to` (epoch-ms) — all optional, combined with AND; `page`/`pageSize` (`pageSize ≤ 100`). Response `{ data, pagination: { page, pageSize, total } }`. |
 
 ---
 

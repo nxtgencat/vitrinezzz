@@ -17,6 +17,13 @@ const AUDITED_MUTATIONS: {
   entityTypes: string[];
 }[] = [
   { route: "PUT /api/staff/:id/deactivate", serviceFile: "services/staff.ts", entityTypes: ["staff"] },
+  { route: "PUT /api/settings", serviceFile: "services/org.ts", entityTypes: ["settings"] },
+  { route: "POST /api/outlets", serviceFile: "services/org.ts", entityTypes: ["outlet"] },
+  { route: "PUT /api/outlets/:id", serviceFile: "services/org.ts", entityTypes: ["outlet"] },
+  { route: "POST /api/roles", serviceFile: "services/org.ts", entityTypes: ["role"] },
+  { route: "PUT /api/roles/:id", serviceFile: "services/org.ts", entityTypes: ["role"] },
+  { route: "POST /api/staff", serviceFile: "services/org.ts", entityTypes: ["staff"] },
+  { route: "PUT /api/staff/:id", serviceFile: "services/org.ts", entityTypes: ["staff"] },
   { route: "POST /api/categories", serviceFile: "services/catalog.ts", entityTypes: ["category"] },
   { route: "PUT /api/categories/:id", serviceFile: "services/catalog.ts", entityTypes: ["category"] },
   { route: "POST /api/products", serviceFile: "services/catalog.ts", entityTypes: ["product", "variant"] },

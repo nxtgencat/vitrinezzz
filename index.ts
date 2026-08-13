@@ -5,6 +5,8 @@ import { logger } from "./lib/logger";
 import { bootstrapAdmin } from "./lib/auth";
 import { reapExpiredIdempotencyKeys } from "./lib/idempotency";
 import { attachRealtimeServer } from "./lib/realtime";
+import { runNightlyBackup } from "./lib/backup";
+import { runNightlyStockCheck } from "./lib/stock-check";
 import { app } from "./app";
 
 applyMigrations(db);
@@ -17,4 +19,12 @@ logger.info({ port: server.port }, "vitrine listening");
 
 Bun.cron("0 3 * * *", () => {
   void reapExpiredIdempotencyKeys();
+});
+
+Bun.cron("0 3 * * *", () => {
+  void runNightlyBackup();
+});
+
+Bun.cron("0 3 * * *", () => {
+  void runNightlyStockCheck();
 });

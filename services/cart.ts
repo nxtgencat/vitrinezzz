@@ -107,23 +107,38 @@ export type WishlistDisplayRow = {
   createdAt: number;
 };
 
+const wishlistDisplay = {
+  id: wishlistItems.id,
+  variantId: wishlistItems.variantId,
+  name: variants.name,
+  sku: variants.sku,
+  productSlug: products.slug,
+  sellingPricePaise: variants.sellingPricePaise,
+  createdAt: wishlistItems.createdAt,
+};
+
 export function listWishlist(customerId: string): WishlistDisplayRow[] {
   return db
-    .select({
-      id: wishlistItems.id,
-      variantId: wishlistItems.variantId,
-      name: variants.name,
-      sku: variants.sku,
-      productSlug: products.slug,
-      sellingPricePaise: variants.sellingPricePaise,
-      createdAt: wishlistItems.createdAt,
-    })
+    .select(wishlistDisplay)
     .from(wishlistItems)
     .innerJoin(variants, eq(variants.id, wishlistItems.variantId))
     .innerJoin(products, eq(products.id, variants.productId))
     .where(eq(wishlistItems.customerId, customerId))
     .orderBy(asc(wishlistItems.createdAt), asc(wishlistItems.id))
     .all();
+}
+
+/** Own rows only — any other variant is indistinguishable from a missing row. */
+export function getWishlistItem(customerId: string, variantId: string): WishlistDisplayRow | null {
+  return (
+    db
+      .select(wishlistDisplay)
+      .from(wishlistItems)
+      .innerJoin(variants, eq(variants.id, wishlistItems.variantId))
+      .innerJoin(products, eq(products.id, variants.productId))
+      .where(and(eq(wishlistItems.customerId, customerId), eq(wishlistItems.variantId, variantId)))
+      .get() ?? null
+  );
 }
 
 /** Add is an upsert: a duplicate `(customerId, variantId)` is a no-op. */

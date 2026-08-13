@@ -675,7 +675,7 @@ Phase-10 specific limits (`/api/storefront/checkout` 5/min) land with their phas
 
 | Rule | Convention |
 |---|---|
-| Layout | Root-level dirs only — `lib/` (infrastructure: db, logger, idempotency, errors, money, doc-number, pdf, backup, auth), `db/schema/` (one Drizzle schema file per `schema.md` domain group §3–§13), `db/migrations/` (drizzle-kit SQL), `services/` (one module per domain service — `rbac.ts`, `staff.ts`, `audit.ts`, `catalog.ts`, `stock.ts`, …; every gated service asserts `requireCapability` itself), `routes/` (one Hono sub-app module per `api.md` section — `catalog.ts`, `inventory.ts`, …; mounted on the root app as `app.route("/api", xRoutes)`), `app.ts` (the assembled Hono app: hooks, `/api/auth/*` + `/api/health`, sub-app mounts, `export type AppType`; `index.ts` only boots it: `applyMigrations` + `bootstrapAdmin` + `Bun.serve` + crons), `scripts/` (verify-*/smoke-*), `test/` (bun test scenario suites, one `test:<phase>` script per phase). No `src/` wrapper; docs that said `src/` were corrected in phase 1. |
+| Layout | Root-level dirs only — `lib/` (infrastructure: db, logger, idempotency, errors, money, doc-number, pdf, backup, stock-check, auth), `db/schema/` (one Drizzle schema file per `schema.md` domain group §3–§13), `db/migrations/` (drizzle-kit SQL), `services/` (one module per domain service — `rbac.ts`, `staff.ts`, `org.ts`, `audit.ts`, `catalog.ts`, `stock.ts`, …; every gated service asserts `requireCapability` itself), `routes/` (one Hono sub-app module per `api.md` section — `catalog.ts`, `org.ts`, `audit.ts`, `inventory.ts`, …; mounted on the root app as `app.route("/api", xRoutes)`), `app.ts` (the assembled Hono app: hooks, `/api/auth/*` + `/api/health`, sub-app mounts, `export type AppType`; `index.ts` only boots it: `applyMigrations` + `bootstrapAdmin` + `Bun.serve` + crons), `scripts/` (verify-*/smoke-*), `test/` (bun test scenario suites, one `test:<phase>` script per phase). No `src/` wrapper; docs that said `src/` were corrected in phase 1. |
 | Route layer | Sub-apps only route, validate, and authorize (route-level `requireStaff`/`requireCapability` mirroring the service assertion); all decision logic, audit writes, and stock writes live in services. Every mutation runs `withIdempotency` + `respondIdempotent`; read guards match the `api.md` column (`*` = public, `S` = staff session, `R(cap)` = staff + capability). |
 | Slugs | Server-derived from `name` by `slugifyName` (lowercase, non-alphanumeric runs → `-`, trimmed); collision → `409 duplicate_slug`; immutable after creation. |
 | Primary key | `id` TEXT = full `Bun.randomUUIDv7()`, never truncated (time-ordered; truncation collides within a time bucket). `settings` is the singleton exception, fixed id `'singleton'`. |
@@ -740,19 +740,30 @@ this one.
 
 ### 4.18 Nightly backup
 
+`lib/backup.ts` exposes the two callables; `index.ts` registers the cron, mirroring
+the idempotency reaper (§4.2) — the same pattern for all three crons in §4.17:
+
+```ts
+// index.ts
+Bun.cron("0 3 * * *", () => { void runNightlyBackup(); });
+```
+
 ```ts
 // lib/backup.ts
-Bun.cron("0 3 * * *", async () => {
+export async function runNightlyBackup(): Promise<string | null> {
+  // reads DATABASE_PATH + BACKUP_DIR at call time (BACKUP_DIR defaults to ./data/backups)
   try {
-    const src = Bun.file(DATABASE_PATH);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    await Bun.write(`${BACKUP_DIR}/vitrine-${stamp}.sqlite`, src);
+    await copyIfExists(`${DATABASE_PATH}`, `${BACKUP_DIR}/vitrine-${stamp}.sqlite`);
+    await copyIfExists(`${DATABASE_PATH}-wal`, `${BACKUP_DIR}/vitrine-${stamp}.sqlite-wal`);
+    await copyIfExists(`${DATABASE_PATH}-shm`, `${BACKUP_DIR}/vitrine-${stamp}.sqlite-shm`);
     await pruneBackupsOlderThan(30, "days");
+    return main;
   } catch (err) {
     logger.error({ err }, "nightly backup failed");
-    // never throws past this point — a failed backup must not affect the running process
+    return null; // never throws past this point — a failed backup must not affect the running process
   }
-});
+}
 ```
 
 WAL mode means a file-level copy taken outside a write transaction is safe to read
