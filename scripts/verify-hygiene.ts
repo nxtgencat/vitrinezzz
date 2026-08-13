@@ -4,8 +4,8 @@ import { join } from "node:path";
 const log = (await import("../lib/logger")).logger.child({ module: "verify-hygiene" });
 const failures: string[] = [];
 
-const SCAN_DIRS = ["lib", "db", "services", "scripts", "test"];
-const SCAN_ROOT_FILES = ["index.ts", "drizzle.config.ts"];
+const SCAN_DIRS = ["lib", "db", "services", "routes", "scripts", "test"];
+const SCAN_ROOT_FILES = ["index.ts", "app.ts", "drizzle.config.ts"];
 
 function scanFiles(): { path: string; lines: string[] }[] {
   const files: { path: string; lines: string[] }[] = [];
@@ -96,7 +96,14 @@ if (typecheck.exitCode !== 0) {
   failures.push(typecheck.stdout.toString().slice(0, 2000));
 }
 
-const CLIENT_ORIGINABLE_MONEY_KEYS = ["unitPricePaise", "amountPaise", "unitCostPaise"];
+const CLIENT_ORIGINABLE_MONEY_KEYS = [
+  "unitPricePaise",
+  "amountPaise",
+  "unitCostPaise",
+  "costPricePaise",
+  "sellingPricePaise",
+  "mrpPaise",
+];
 for (const { path, lines } of files) {
   const content = lines.join("\n");
   if (!/z\.object|zValidator/.test(content)) continue;

@@ -1,5 +1,5 @@
 import { randomUUIDv7 } from "bun";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 
@@ -13,12 +13,18 @@ const { logger } = await import("../lib/logger");
 const log = logger.child({ module: "verify-immutability" });
 const failures: string[] = [];
 
-const migrationSql = readFileSync(join(import.meta.dir, "..", "db", "migrations", "0000_initial.sql"), "utf8");
+const migrationDir = join(import.meta.dir, "..", "db", "migrations");
+const migrationFiles = readdirSync(migrationDir)
+  .filter((f) => f.endsWith(".sql"))
+  .sort();
 
 const scratch = new Database(tmpPath);
-for (const stmt of migrationSql.split("--> statement-breakpoint")) {
-  const s = stmt.trim();
-  if (s.length > 0) scratch.run(s);
+for (const file of migrationFiles) {
+  const sql = readFileSync(join(migrationDir, file), "utf8");
+  for (const stmt of sql.split("--> statement-breakpoint")) {
+    const s = stmt.trim();
+    if (s.length > 0) scratch.run(s);
+  }
 }
 scratch.run("PRAGMA foreign_keys = OFF;");
 
@@ -67,7 +73,7 @@ for (const [table, { cols, values }] of Object.entries(FACT_ROWS)) {
 const FACT_IDS = ["stockMovements", "payments", "orderEvents", "auditEvents"];
 const FACT_TABLES_SQL = ["stock_movements", "payments", "order_events", "audit_events"];
 
-for (const dir of ["lib", "db", "scripts"]) {
+for (const dir of ["lib", "db", "scripts", "routes"]) {
   for (const file of new Bun.Glob(`${dir}/**/*.ts`).scanSync({ cwd: process.cwd(), absolute: true })) {
     const rel = file.replace(process.cwd() + "/", "");
     const lines = readFileSync(file, "utf8").split("\n");

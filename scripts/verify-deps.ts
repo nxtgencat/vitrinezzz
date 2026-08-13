@@ -4,8 +4,8 @@ import { join } from "node:path";
 const log = (await import("../lib/logger")).logger.child({ module: "verify-deps" });
 const failures: string[] = [];
 
-const SCAN_DIRS = ["lib", "db", "services", "scripts", "test"];
-const SCAN_ROOT_FILES = ["index.ts"];
+const SCAN_DIRS = ["lib", "db", "services", "routes", "scripts", "test"];
+const SCAN_ROOT_FILES = ["index.ts", "app.ts"];
 
 const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
   dependencies?: Record<string, string>;
@@ -49,7 +49,7 @@ for (const file of files) {
 }
 
 const TOOLING_ALLOWLIST = ["typescript", "@types/bun", "drizzle-kit"];
-const DEFERRED_IMPORT_ALLOWLIST = ["@hono/zod-validator", "zod"];
+const DEFERRED_IMPORT_ALLOWLIST: string[] = [];
 for (const name of Object.keys(declared)) {
   if (TOOLING_ALLOWLIST.includes(name) || DEFERRED_IMPORT_ALLOWLIST.includes(name)) continue;
   if (!imported.has(name)) {

@@ -1,37 +1,12 @@
-import { Hono } from "hono";
+import { applyMigrations } from "./lib/migrate";
 import { db } from "./lib/db";
 import { logger } from "./lib/logger";
-import { applyMigrations } from "./lib/migrate";
-import { auth, bootstrapAdmin } from "./lib/auth";
-import { handleError, notFoundHandler } from "./lib/errors";
+import { bootstrapAdmin } from "./lib/auth";
 import { reapExpiredIdempotencyKeys } from "./lib/idempotency";
+import { app } from "./app";
 
 applyMigrations(db);
 await bootstrapAdmin();
-
-export const app = new Hono();
-
-app.onError(handleError);
-app.notFound(notFoundHandler);
-
-app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
-
-app.get("/api/health", (c) => {
-  const start = performance.now();
-  let dbTimeMs: number;
-  try {
-    db.$client.query("SELECT 1").get();
-    dbTimeMs = performance.now() - start;
-  } catch (err) {
-    logger.error({ err }, "health db probe failed");
-    return c.json({
-      status: "degraded",
-      dbTimeMs: performance.now() - start,
-      ledgerCounts: {},
-    });
-  }
-  return c.json({ status: "ok", dbTimeMs, ledgerCounts: {} });
-});
 
 const port = Number(process.env.PORT ?? 3000);
 const server = Bun.serve({ port, fetch: app.fetch });

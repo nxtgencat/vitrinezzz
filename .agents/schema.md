@@ -61,9 +61,12 @@ Created once, in the initial migration. Corrections are new rows, never edits.
 PK `id`; idx `(parentId)`. `parentId` must not create a cycle (service-enforced).
 
 ### 3.2 products
-`id`, `categoryId`, `name`, `slug`, `hsnCode`, `gstRatePct`, `isActive`, `createdAt`,
-`updatedAt`. PK `id`; UNIQUE `(slug)`; idx `(categoryId)`. `slug` server-generated from
-name at creation, immutable thereafter; duplicate → `409 duplicate_slug`.
+`id`, `categoryId?` (FK, nullable — uncategorized products are legal per `api.md` §3),
+`name`, `slug`, `hsnCode`, `gstRatePct`, `isActive`, `createdAt`, `updatedAt`. PK `id`;
+UNIQUE `(slug)`; idx `(categoryId)`. `slug` server-generated from name at creation,
+immutable thereafter; duplicate → `409 duplicate_slug`. Nullability of `categoryId`
+was corrected by migration `0001_products_category_nullable` (api.md marked it optional
+from the start; the initial `NOT NULL` was a phase-1 spec bug).
 
 ### 3.3 variants
 `id`, `productId`, `name`, `sku?`, `barcode?`, `costPricePaise`, `sellingPricePaise`,

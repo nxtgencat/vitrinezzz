@@ -26,7 +26,7 @@ export const products = sqliteTable(
   "products",
   {
     id: text("id").primaryKey(),
-    categoryId: text("categoryId").references(() => categories.id, { onDelete: "restrict" }).notNull(),
+    categoryId: text("categoryId").references(() => categories.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     hsnCode: text("hsnCode").notNull(),

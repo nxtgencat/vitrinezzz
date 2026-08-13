@@ -65,8 +65,8 @@ with an auto-seeded `Admin` role (all 9 capabilities); `isProtected = true`.
 | Method | Path | Guard | Idem | Notes |
 |---|---|---|---|---|
 | GET | `/api/categories` | * | – | Flat list; tree assembly is client-side. Filter `active`. |
-| POST | `/api/categories` | R(canManageCatalog) | I | `{ name, parentId? }`; `parentId` must not create a cycle. |
-| PUT | `/api/categories/:id` | R(canManageCatalog) | I | `{ name?, parentId?, isActive? }`. |
+| POST | `/api/categories` | R(canManageCatalog) | I | `{ name, parentId? }`; `parentId` must exist (else `404`); a parent chain that would cycle back to the category → `409 category_cycle`. |
+| PUT | `/api/categories/:id` | R(canManageCatalog) | I | `{ name?, parentId?, isActive? }`; same `409 category_cycle` guard. |
 | GET | `/api/products` | * | – | Filters `q` (name), `categoryId`, `active`. |
 | GET | `/api/products/:slug` | * | – | Product detail + media + variants. |
 | POST | `/api/products` | R(canManageCatalog) | I | `{ categoryId?, name, hsnCode?, gstRatePct?, baseVariant: { name, sku?, barcode?, costPricePaise, sellingPricePaise, mrpPaise? } }` — creates product + base variant in one tx; `slug` server-generated, unique; duplicate → `409 duplicate_slug`. |

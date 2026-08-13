@@ -14,6 +14,7 @@ export const REASON_CODES = [
   "duplicate_batch",
   "duplicate_sku",
   "duplicate_slug",
+  "category_cycle",
   "protected_resource",
   "rate_limited",
   "not_found",

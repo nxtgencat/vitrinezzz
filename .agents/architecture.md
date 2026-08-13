@@ -293,7 +293,11 @@ expressed by `stock_levels`, never by the batch row itself. Every `stock_movemen
 references an existing `batchId`; the only entry points that create one are the
 explicit batch-create route and purchase-bill-issue (create-or-reuse by
 `(variantId, batchNumber)`). Sales allocate FIFO by expiry (`allocateBatches`, a pure,
-unit-tested helper); a return mirrors the exact allocations of the line it reverses.
+unit-tested helper): sort `(expiryDate ASC, nulls last, batchId ASC as the
+deterministic tie-break)`, greedy take, skip holdings `≤ 0`, return `null` when the
+request cannot be fully satisfied (the caller turns that into the in-tx
+`409 insufficient_stock`). A return mirrors the exact allocations of the line it
+reverses.
 
 ### 4.7 Workflows — the document lifecycles, stated once
 
@@ -497,8 +501,8 @@ Closed `reason` vocabulary — every value has a matching route and a matching t
 `idempotency_key_required` · `idempotency_mismatch` · `insufficient_stock` ·
 `over_payment` · `over_return` · `stale_version` · `already_issued` ·
 `invalid_transition` · `duplicate_batch` · `duplicate_sku` · `duplicate_slug` ·
-`protected_resource` · `rate_limited` · `not_found` · `bad_signature` ·
-`gateway_unknown`.
+`category_cycle` · `protected_resource` · `rate_limited` · `not_found` ·
+`bad_signature` · `gateway_unknown`.
 
 **Route manifest checked both directions** by `verify-routes.ts` — nothing in `api.md`
 unimplemented, nothing implemented undocumented.
@@ -577,7 +581,9 @@ Phase-10 specific limits (`/api/storefront/checkout` 5/min) land with their phas
 
 | Rule | Convention |
 |---|---|
-| Layout | Root-level dirs only — `lib/` (infrastructure: db, logger, idempotency, errors, money, doc-number, pdf, backup, auth), `db/schema/` (one Drizzle schema file per `schema.md` domain group §3–§13), `db/migrations/` (drizzle-kit SQL), `services/` (one module per domain service — `rbac.ts`, `staff.ts`, `audit.ts`, …; every gated service asserts `requireCapability` itself), `scripts/` (verify-*/smoke-*), `test/` (bun test scenario suites, one `test:<phase>` script per phase). No `src/` wrapper; docs that said `src/` were corrected in phase 1. |
+| Layout | Root-level dirs only — `lib/` (infrastructure: db, logger, idempotency, errors, money, doc-number, pdf, backup, auth), `db/schema/` (one Drizzle schema file per `schema.md` domain group §3–§13), `db/migrations/` (drizzle-kit SQL), `services/` (one module per domain service — `rbac.ts`, `staff.ts`, `audit.ts`, `catalog.ts`, `stock.ts`, …; every gated service asserts `requireCapability` itself), `routes/` (one Hono sub-app module per `api.md` section — `catalog.ts`, `inventory.ts`, …; mounted on the root app as `app.route("/api", xRoutes)`), `app.ts` (the assembled Hono app: hooks, `/api/auth/*` + `/api/health`, sub-app mounts, `export type AppType`; `index.ts` only boots it: `applyMigrations` + `bootstrapAdmin` + `Bun.serve` + crons), `scripts/` (verify-*/smoke-*), `test/` (bun test scenario suites, one `test:<phase>` script per phase). No `src/` wrapper; docs that said `src/` were corrected in phase 1. |
+| Route layer | Sub-apps only route, validate, and authorize (route-level `requireStaff`/`requireCapability` mirroring the service assertion); all decision logic, audit writes, and stock writes live in services. Every mutation runs `withIdempotency` + `respondIdempotent`; read guards match the `api.md` column (`*` = public, `S` = staff session, `R(cap)` = staff + capability). |
+| Slugs | Server-derived from `name` by `slugifyName` (lowercase, non-alphanumeric runs → `-`, trimmed); collision → `409 duplicate_slug`; immutable after creation. |
 | Primary key | `id` TEXT = full `Bun.randomUUIDv7()`, never truncated (time-ordered; truncation collides within a time bucket). `settings` is the singleton exception, fixed id `'singleton'`. |
 | Human document numbers | `<PREFIX>-<7 base32 chars>` via `lib/doc-number.ts`, own UNIQUE column, never derived from `id`. The alphabet is **RFC 4648 base32** (`A–Z`, `2–7`), 35 random bits per number. A caller that hits a UNIQUE violation (collision probability ~0.14% at 10k documents) regenerates. Prefixes: `OR` orders, `INV` invoices, `BL` bills, `TR` transfers, `AJ` adjustments, `RT` returns, `SH` shipments, `PY` payments. |
 | Money | INTEGER paise; every money column ends in `Paise`. No REAL column anywhere. |
@@ -700,6 +706,9 @@ re-checked before any `bun add` re-resolution in §2 changes it.
 | better-auth rate limit | `rateLimit: { customRules: { "*": false } }` | Disables the built-in limiter entirely; applied only under `NODE_ENV=test`/`TEST=true` (`§4.14`). Defaults otherwise: sign-up/sign-in `3`/`10s` per IP, in-memory. |
 | Hono guards | `throw new HTTPException(status, { message })` from `hono/http-exception` | Status + message; error envelope lands in phase 3. |
 | Zod v4 enums | `z.enum([...])` | `z.nativeEnum` doesn't exist in v4; issues at `error.issues`. |
+| Zod v4 UUIDs | `z.uuid()` | `z.string().uuid()` is deprecated in v4 (classic API; default export). |
+| Zod v4 query params | `z.coerce.number().int().min(1)` + `z.enum(["0", "1"])` | `z.coerce` string-coerces URL query params; booleans stay string enums at the boundary. |
+| Validator wrapper | `jsonValidator`/`queryValidator`/`paramValidator` in `lib/validate.ts` | Constraint `T extends z.ZodType` is assignable to `zValidator`'s `T extends ZodSchema` (`ZodSchema = v3.ZodType \| v4.$ZodType`); the hook always throws `HTTPException(400, { cause: result.error })`. |
 | `Bun.cron` | `Bun.cron(pattern, handler)` | Function-pair signature — not `.schedule({...})`, which doesn't exist. |
 | `Bun.CryptoHasher` | `new Bun.CryptoHasher("sha256"); hasher.update(str); hasher.digest("hex")` | `update` accepts string/buffer; `digest(encoding)` returns a string for `"hex"`. Used for `requestHash` (§4.2). |
 | `Bun.spawn` | `Bun.spawn(cmd, { cwd, env, stdout: "pipe", stderr: "pipe" })` → `proc`; `await proc.exited` | `exited` resolves with the exit code; `exitCode` is the sync read. Used by the crash-mid-transaction test to kill a worker between `BEGIN` and `COMMIT`. |
