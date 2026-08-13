@@ -3,11 +3,16 @@ import { db } from "./lib/db";
 import { logger } from "./lib/logger";
 import { applyMigrations } from "./lib/migrate";
 import { auth, bootstrapAdmin } from "./lib/auth";
+import { handleError, notFoundHandler } from "./lib/errors";
+import { reapExpiredIdempotencyKeys } from "./lib/idempotency";
 
 applyMigrations(db);
 await bootstrapAdmin();
 
 export const app = new Hono();
+
+app.onError(handleError);
+app.notFound(notFoundHandler);
 
 app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
@@ -31,3 +36,7 @@ app.get("/api/health", (c) => {
 const port = Number(process.env.PORT ?? 3000);
 const server = Bun.serve({ port, fetch: app.fetch });
 logger.info({ port: server.port }, "vitrine listening");
+
+Bun.cron("0 3 * * *", () => {
+  void reapExpiredIdempotencyKeys();
+});

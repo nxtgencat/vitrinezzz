@@ -281,10 +281,11 @@ checkout re-derivation rule that keeps this safe.
 
 ### 12.1 idempotency_keys
 `id`, `operation` (`METHOD /api/<pattern>`), `key` (client `Idempotency-Key`),
-`requestHash` (sha256 of canonicalized body + actor id), `responseSnapshot` (JSON,
-replayed verbatim), `status` (always `'completed'` — inserted in the same tx as the
-work), `createdAt`, `expiresAt` (reaped 24h after `createdAt`). PK `id`; UNIQUE
-`(operation, key)`; idx `(expiresAt)`.
+`requestHash` (sha256 of canonicalized body + actor id), `responseSnapshot` (TEXT —
+the **verbatim** serialized JSON response, replayed byte-for-byte; plain column, no
+drizzle JSON mode, so the exact bytes are stored and returned untouched), `status`
+(always `'completed'` — inserted in the same tx as the work), `createdAt`, `expiresAt`
+(reaped 24h after `createdAt`). PK `id`; UNIQUE `(operation, key)`; idx `(expiresAt)`.
 
 ---
 

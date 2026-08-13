@@ -133,9 +133,15 @@ transaction's behavior is deterministic regardless of what else is queued behind
 Every mutating route (marked `I` in `api.md`) requires header `Idempotency-Key`;
 missing → `400 VALIDATION`, `reason: idempotency_key_required`. Reads never need it.
 
-`operation` = method + route pattern (e.g. `POST /api/invoices/:id/issue`). `key` = the
-header value. `requestHash` = SHA-256 of the canonicalized (sorted-key) request body
-JSON plus the actor's user id.
+`operation` = method + route pattern (e.g. `POST /api/invoices/:id/issue`). Routes
+derive it as `${c.req.method} ${c.req.routePath}` (Hono returns the registered
+pattern, so the same key on a different route is a different `(operation, key)`
+and never collides). `key` = the header value. `requestHash` = SHA-256 of the
+canonicalized (sorted-key) request body JSON plus the actor's user id —
+defined exactly as `sha256(canonicalJson(body ?? null) + "\n" + actorId)`,
+`canonicalJson` being a recursive key-sort producing compact JSON
+(`lib/idempotency.ts`). A key reused by a different actor is a mismatch, because
+the hash is bound to the actor.
 
 Inside the **same** `immediate` transaction as the work, in this exact order:
 
@@ -147,13 +153,26 @@ Inside the **same** `immediate` transaction as the work, in this exact order:
 4. **Absent:** run the operation, then insert the row (`status: "completed"`,
    `responseSnapshot` = the serialized response) in the same transaction.
 
+**The `withIdempotency` contract** (`lib/idempotency.ts`): the route calls
+`withIdempotency({ operation, key, actorId, body, run })`; `run(tx)` performs the
+work **inside** the same transaction as the check/insert (statement order T3) and
+must return the exact response body object — it is serialized once and stored
+byte-for-byte, and a replay returns it via `respondIdempotent(c, result)`, which
+sets the replay header and sends the stored bytes. The missing-key 400 is thrown
+by `withIdempotency` itself, so no route can forget it. A `run` that throws rolls
+back work and row together — nothing is ever stored for a failed operation, so a
+retry with the same key re-executes cleanly.
+
 Because the transaction is synchronous and single-writer (§4.1), a concurrent duplicate
 request's transaction cannot begin until the first has committed or rolled back — it
 either finds the row and replays, or it is the one doing the work. **There is no
 `processing` state and no TTL-recovery machine**: a crash between `BEGIN` and `COMMIT`
 leaves neither a completed row nor completed work, because WAL rollback discards both
 together — exactly-once holds across process death with nothing to "repair." Rows are
-reaped 24h after `createdAt` by a nightly `Bun.cron` job.
+reaped 24h after `createdAt` by a nightly `Bun.cron` job (`"0 3 * * *"`, registered in
+`index.ts`, body = `reapExpiredIdempotencyKeys()` from `lib/idempotency.ts`, which
+deletes rows with `expiresAt < now` inside `withTx` and never throws past its own
+catch — a failed reap is logged, never fatal).
 
 **Webhooks are the sanctioned exception** — gateways don't send idempotency keys.
 `POST /api/webhooks/payments/:gateway` is protected instead by:
@@ -560,7 +579,7 @@ Phase-10 specific limits (`/api/storefront/checkout` 5/min) land with their phas
 |---|---|
 | Layout | Root-level dirs only — `lib/` (infrastructure: db, logger, idempotency, errors, money, doc-number, pdf, backup, auth), `db/schema/` (one Drizzle schema file per `schema.md` domain group §3–§13), `db/migrations/` (drizzle-kit SQL), `services/` (one module per domain service — `rbac.ts`, `staff.ts`, `audit.ts`, …; every gated service asserts `requireCapability` itself), `scripts/` (verify-*/smoke-*), `test/` (bun test scenario suites, one `test:<phase>` script per phase). No `src/` wrapper; docs that said `src/` were corrected in phase 1. |
 | Primary key | `id` TEXT = full `Bun.randomUUIDv7()`, never truncated (time-ordered; truncation collides within a time bucket). `settings` is the singleton exception, fixed id `'singleton'`. |
-| Human document numbers | `<PREFIX>-<7 base32 chars>` via `lib/doc-number.ts`, own UNIQUE column, never derived from `id`. Prefixes: `OR` orders, `INV` invoices, `BL` bills, `TR` transfers, `AJ` adjustments, `RT` returns, `SH` shipments, `PY` payments. |
+| Human document numbers | `<PREFIX>-<7 base32 chars>` via `lib/doc-number.ts`, own UNIQUE column, never derived from `id`. The alphabet is **RFC 4648 base32** (`A–Z`, `2–7`), 35 random bits per number. A caller that hits a UNIQUE violation (collision probability ~0.14% at 10k documents) regenerates. Prefixes: `OR` orders, `INV` invoices, `BL` bills, `TR` transfers, `AJ` adjustments, `RT` returns, `SH` shipments, `PY` payments. |
 | Money | INTEGER paise; every money column ends in `Paise`. No REAL column anywhere. |
 | Tax | `taxRatePct` INTEGER percent. |
 | Quantities | `quantity`/`delta` INTEGER, signed where noted. No fractional units. |
@@ -682,6 +701,12 @@ re-checked before any `bun add` re-resolution in §2 changes it.
 | Hono guards | `throw new HTTPException(status, { message })` from `hono/http-exception` | Status + message; error envelope lands in phase 3. |
 | Zod v4 enums | `z.enum([...])` | `z.nativeEnum` doesn't exist in v4; issues at `error.issues`. |
 | `Bun.cron` | `Bun.cron(pattern, handler)` | Function-pair signature — not `.schedule({...})`, which doesn't exist. |
+| `Bun.CryptoHasher` | `new Bun.CryptoHasher("sha256"); hasher.update(str); hasher.digest("hex")` | `update` accepts string/buffer; `digest(encoding)` returns a string for `"hex"`. Used for `requestHash` (§4.2). |
+| `Bun.spawn` | `Bun.spawn(cmd, { cwd, env, stdout: "pipe", stderr: "pipe" })` → `proc`; `await proc.exited` | `exited` resolves with the exit code; `exitCode` is the sync read. Used by the crash-mid-transaction test to kill a worker between `BEGIN` and `COMMIT`. |
+| `Bun.Glob` | `new Bun.Glob(pattern).scanSync({ cwd, absolute: true })` | Iterable of matching paths; `absolute: true` returns absolute paths. Used by the verify-* greps. |
+| Hono route pattern | `c.req.routePath` | Returns the registered path pattern (e.g. `/api/invoices/:id/issue`) — the `operation` half of `(operation, key)` (§4.2). |
+| Hono error/not-found hooks | `app.onError((err, c) => …)`; `app.notFound((c) => …)` | Mounted in `index.ts`; `lib/errors.ts` maps `HTTPException` status → envelope code, Zod `cause.issues` → `details`, unknown errors → logged `INTERNAL` 500, never leaked. |
+| Hono raw body response | `c.body(snapshot, 200, { "content-type": "application/json" })` | Used by `respondIdempotent` so a replayed response is byte-identical to the stored snapshot (§4.2). |
 | `Bun.WebView` construction | `new Bun.WebView({ backend: "chrome", headless: true })` | `chrome` backend required for CDP — WebKit has no CDP bridge. |
 | `Bun.WebView.cdp` | `await view.cdp("Page.printToPDF", { printBackground: true, format: "A4", preferCSSPageSize: true })` | Result returned **directly** — payload at `result.data`, not `{ data }`. |
 | `Bun.S3` | `new Bun.S3Client({ endpoint, accessKeyId, secretAccessKey, bucket })` then `.write(path, bytes)` / `.file(path)` | MinIO-compatible via `endpoint` — no separate MinIO SDK. |

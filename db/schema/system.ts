@@ -7,7 +7,7 @@ export const idempotencyKeys = sqliteTable(
     operation: text("operation").notNull(),
     key: text("key").notNull(),
     requestHash: text("requestHash").notNull(),
-    responseSnapshot: text("responseSnapshot", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    responseSnapshot: text("responseSnapshot").notNull(),
     status: text("status").notNull(),
     createdAt: integer("createdAt").notNull(),
     expiresAt: integer("expiresAt").notNull(),
