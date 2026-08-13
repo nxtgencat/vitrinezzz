@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { respondIdempotent, withIdempotency } from "../lib/idempotency";
+import { publish } from "../lib/realtime";
 import { jsonValidator, paramValidator, queryValidator } from "../lib/validate";
 import { requireCapability, requireStaff } from "../services/rbac";
 import { confirmReturn, createReturn, getReturn, listReturns, updateReturn, voidReturn } from "../services/returns";
@@ -111,6 +112,13 @@ returnsRoutes.post("/returns/:id/confirm", paramValidator(idParam), jsonValidato
     body,
     run: (tx) => confirmReturn(tx, actor, id),
   });
+  if (!result.replayed && result.value) {
+    const ret = result.value as ReturnType<typeof confirmReturn>;
+    if (ret.orderId) {
+      publish("order:" + ret.orderId, "return.confirmed", ret.orderId);
+    }
+    publish("stock:" + ret.outletId, "stock.changed", ret.outletId);
+  }
   return respondIdempotent(c, result);
 });
 

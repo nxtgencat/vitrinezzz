@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { respondIdempotent, withIdempotency } from "../lib/idempotency";
+import { PDF_HTML_MAX_BYTES, renderInvoicePdf } from "../lib/pdf";
+import { publish } from "../lib/realtime";
 import { jsonValidator, paramValidator, queryValidator } from "../lib/validate";
 import { requireCapability, requireStaff } from "../services/rbac";
 import {
@@ -73,6 +75,8 @@ const posCheckoutSchema = z.object({
   charges: z.array(saleChargeSchema).optional(),
 });
 
+const renderPdfSchema = z.object({ html: z.string().trim().min(1).max(PDF_HTML_MAX_BYTES) }).strict();
+
 salesRoutes.get("/orders", queryValidator(pageQuery), async (c) => {
   const actor = await requireStaff(c.req.raw.headers);
   requireCapability(actor, "canManageSales");
@@ -136,6 +140,10 @@ salesRoutes.post("/orders/:id/confirm", paramValidator(idParam), jsonValidator(z
     body,
     run: (tx) => confirmOrder(tx, actor, id),
   });
+  if (!result.replayed && result.value) {
+    const order = result.value as ReturnType<typeof confirmOrder>;
+    publish("order:" + order.id, "order.confirmed", order.id);
+  }
   return respondIdempotent(c, result);
 });
 
@@ -152,6 +160,10 @@ salesRoutes.post("/orders/:id/cancel", paramValidator(idParam), jsonValidator(z.
     body,
     run: (tx) => cancelOrder(tx, actor, id),
   });
+  if (!result.replayed && result.value) {
+    const order = result.value as ReturnType<typeof cancelOrder>;
+    publish("order:" + order.id, "order.cancelled", order.id);
+  }
   return respondIdempotent(c, result);
 });
 
@@ -200,6 +212,14 @@ salesRoutes.post("/invoices/:id/issue", paramValidator(idParam), jsonValidator(z
     body,
     run: (tx) => issueInvoice(tx, actor, id),
   });
+  if (!result.replayed && result.value) {
+    const invoice = result.value as ReturnType<typeof issueInvoice>;
+    publish("invoice:" + invoice.id, "invoice.issued", invoice.id);
+    if (invoice.orderId) {
+      publish("order:" + invoice.orderId, "invoice.issued", invoice.orderId);
+    }
+    publish("stock:" + invoice.outletId, "stock.changed", invoice.outletId);
+  }
   return respondIdempotent(c, result);
 });
 
@@ -231,5 +251,22 @@ salesRoutes.post("/sales/pos/checkout", jsonValidator(posCheckoutSchema), async 
     body,
     run: (tx) => posCheckout(tx, actor, body),
   });
+  if (!result.replayed && result.value) {
+    const { order, invoice } = result.value as ReturnType<typeof posCheckout>;
+    publish("order:" + order.id, "order.confirmed", order.id);
+    publish("invoice:" + invoice.id, "invoice.issued", invoice.id);
+    publish("stock:" + invoice.outletId, "stock.changed", invoice.outletId);
+  }
   return respondIdempotent(c, result);
+});
+
+salesRoutes.post("/invoices/:id/render-pdf", paramValidator(idParam), jsonValidator(renderPdfSchema), async (c) => {
+  const actor = await requireStaff(c.req.raw.headers);
+  requireCapability(actor, "canManageSales");
+  const { id } = c.req.valid("param");
+  const { html } = c.req.valid("json");
+  const invoice = getInvoice(id);
+  if (!invoice) throw new HTTPException(404, { message: "not_found" });
+  const pdfPath = await renderInvoicePdf(id, html);
+  return c.json({ pdfPath });
 });

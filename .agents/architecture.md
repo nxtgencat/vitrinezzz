@@ -112,10 +112,13 @@ Consequences, each of which the rest of this document treats as a proof, not a h
   other request's statement can interleave, so `SQLITE_BUSY` cannot occur and deadlock
   cannot occur — both eliminated by construction, not by retry logic. Concurrent
   requests serialize at whole-transaction granularity.
-- Realtime publishes and PDF rendering are async operations. Because the compiler
-  forbids `await` inside `withTx`, it is structurally impossible to call them from
-  inside a transaction — publish-after-commit (§4.8) and non-fatal PDF failure (§4.9)
-  are consequences of this rule, not separate conventions that could be forgotten.
+- PDF rendering is an async operation (`await view.navigate(...)` etc.). Because the
+  compiler forbids `await` inside `withTx`, it is structurally impossible to print from
+  inside a transaction — non-fatal PDF failure (§4.9) is a consequence of this rule,
+  not a separate convention that could be forgotten. Realtime publish (§4.8) is a
+  *synchronous* `server.publish` — it needs no await, so the compiler does not
+  police it; its call sites are restricted to route handlers running after the
+  transaction's promise resolves, enforced by `scripts/verify-realtime.ts`.
 - pino logging *inside* a callback is fine (synchronous, no I/O await).
 
 **T2 — every transaction takes the write lock up front** (`behavior: "immediate"`).
@@ -391,14 +394,39 @@ One hub at `/api/ws`, Bun native WebSockets, upgrade requires a valid staff or c
 session. Three topics: `order:{id}` (its own customer or any staff) ·
 `invoice:{id}` (its own customer or any staff) · `stock:{outletId}` (any staff).
 
-**Publish-after-commit is structural, not a convention to remember.** Service functions
-never call the publish function themselves — they return a list of
-`{ topic, type, id }` facts alongside their response. The route handler, running
-outside `withTx` after the transaction's promise resolves, is the only call site that
-invokes `realtime.publish`. Because `withTx` callbacks are non-async (§4.1) and
-`publish` is async, a publish call written inside a transaction body is a TypeScript
-compile error — it is structurally impossible for a subscriber to observe an event from
-a transaction that later rolls back.
+**Publish-after-commit is structural, not a convention to remember.** Service
+functions never call the publish function themselves — they return the committed
+response body, and the idempotency wrapper returns it as `IdempotencyResult.value`
+(§4.2). The route handler, running outside `withTx` after the transaction's promise
+resolves, derives its publish facts from that committed response and calls
+`realtime.publish` — **once per fresh execution, never on a replay**: a replayed
+response (`result.replayed === true`) is the durable proof the side effects already
+ran (and already published) on the original execution, so the handler publishes
+nothing. Because `withTx` callbacks are non-async (§4.1), a PDF render or external
+fetch inside a transaction body is a compile error, and a stray `publish` call
+inside one is caught by `scripts/verify-realtime.ts` — it is structurally
+impossible for a subscriber to observe an event from a transaction that later
+rolls back.
+
+**Per-route publish set** (every `‡`-marked row in `api.md`, `‡` = "publishes a
+topic after commit"; `scripts/verify-realtime.ts` asserts the register-and-publish
+pair bidirectionally):
+
+| Route | Facts published after commit (fresh execution only) |
+|---|---|
+| `POST /api/inventory/transfers/:id/confirm` | `stock:{fromOutletId}` + `stock:{toOutletId}`, type `stock.changed` |
+| `POST /api/inventory/adjustments/:id/confirm` | `stock:{outletId}`, `stock.changed` |
+| `POST /api/purchase-bills/:id/issue` | `stock:{outletId}`, `stock.changed` |
+| `POST /api/orders/:id/confirm` | `order:{id}`, `order.confirmed` |
+| `POST /api/orders/:id/cancel` | `order:{id}`, `order.cancelled` |
+| `POST /api/invoices/:id/issue` | `invoice:{id}` `invoice.issued` + `order:{orderId}` `invoice.issued` + `stock:{outletId}` `stock.changed` |
+| `POST /api/sales/pos/checkout` | `order:{id}` `order.confirmed` + `invoice:{id}` `invoice.issued` + `stock:{outletId}` `stock.changed` |
+| `POST /api/returns/:id/confirm` | `order:{orderId}` `return.confirmed` (only when the return carries an `orderId`) + `stock:{outletId}` `stock.changed` |
+| `POST /api/shipments/:id/dispatch` | `order:{orderId}` `shipment.dispatched` (order id read post-commit from the invoice) |
+| `POST /api/shipments/:id/deliver` | `order:{orderId}` `shipment.delivered` |
+| `POST /api/storefront/checkout` | `order:{id}` `order.confirmed` + `invoice:{id}` `invoice.issued` + `stock:{outletId}` `stock.changed` when the checkout confirmed; else `order:{id}` `order.created` (gateway path leaves the order `pending`) |
+| `POST /api/storefront/orders/:id/cancel` | `order:{id}`, `order.cancelled` |
+| `POST /api/webhooks/payments/:gateway` | confirmed: `order:{orderId}` `payment.confirmed` + `invoice:{invoiceId}` `invoice.issued` + `stock:{outletId}` `stock.changed`; refunded: `order:{orderId}` `payment.refunded`; `replayed`: nothing (no idempotency header, dedupe instead — §4.7) |
 
 **Payloads are intentionally thin**: `{ type, entityId, at }`, never the full entity. A
 client treats any event as "refetch this entity." **Reconnect/resync**: on `open`, the
@@ -424,7 +452,9 @@ await view.close();
 
 The invoice's `pdfPath` is set in a small, separate transaction after the file write
 succeeds — printing is never inside the transaction that issued the invoice, because an
-invoice must exist regardless of whether a browser is available to render it.
+invoice must exist regardless of whether a browser is available to render it. Files
+land at `<STORAGE_DIR>/pdfs/<invoiceId>-<uuid>.pdf`; the route responds
+`{ pdfPath: string | null }`.
 
 **Non-fatal by design.** A missing Chrome binary, a failed navigate, or a failed print
 is caught, logged at `warn` via pino, and leaves `pdfPath` null — the parent request

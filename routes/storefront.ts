@@ -7,6 +7,7 @@ import { stockLevels } from "../db/schema/inventory";
 import { db } from "../lib/db";
 import { respondIdempotent, withIdempotency } from "../lib/idempotency";
 import { checkRateLimit } from "../lib/rate-limit";
+import { publish } from "../lib/realtime";
 import { jsonValidator, paramValidator, queryValidator } from "../lib/validate";
 import { requireCustomer } from "../services/rbac";
 import {
@@ -243,6 +244,16 @@ storefrontRoutes.post("/storefront/checkout", jsonValidator(checkoutSchema), asy
     body,
     run: (tx) => storefrontCheckout(tx, customer, body),
   });
+  if (!result.replayed && result.value) {
+    const checkout = result.value as ReturnType<typeof storefrontCheckout>;
+    if (checkout.order.status === "confirmed") {
+      publish("order:" + checkout.order.id, "order.confirmed", checkout.order.id);
+      publish("invoice:" + checkout.invoice.id, "invoice.issued", checkout.invoice.id);
+      publish("stock:" + checkout.invoice.outletId, "stock.changed", checkout.invoice.outletId);
+    } else {
+      publish("order:" + checkout.order.id, "order.created", checkout.order.id);
+    }
+  }
   return respondIdempotent(c, result);
 });
 
@@ -271,6 +282,10 @@ storefrontRoutes.post("/storefront/orders/:id/cancel", paramValidator(idParam), 
     body,
     run: (tx) => cancelCustomerOrder(tx, customer, id),
   });
+  if (!result.replayed && result.value) {
+    const cancelled = result.value as ReturnType<typeof cancelCustomerOrder>;
+    publish("order:" + cancelled.id, "order.cancelled", cancelled.id);
+  }
   return respondIdempotent(c, result);
 });
 

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { respondIdempotent, withIdempotency } from "../lib/idempotency";
+import { publish } from "../lib/realtime";
 import { jsonValidator, paramValidator, queryValidator } from "../lib/validate";
 import { requireCapability, requireStaff } from "../services/rbac";
 import { createBatch, listStockLevels } from "../services/stock";
@@ -195,6 +196,11 @@ inventoryRoutes.post(
       body,
       run: (tx) => confirmTransfer(tx, actor, id),
     });
+    if (!result.replayed && result.value) {
+      const transfer = result.value as ReturnType<typeof confirmTransfer>;
+      publish("stock:" + transfer.fromOutletId, "stock.changed", transfer.fromOutletId);
+      publish("stock:" + transfer.toOutletId, "stock.changed", transfer.toOutletId);
+    }
     return respondIdempotent(c, result);
   },
 );
@@ -301,6 +307,10 @@ inventoryRoutes.post(
       body,
       run: (tx) => confirmAdjustment(tx, actor, id),
     });
+    if (!result.replayed && result.value) {
+      const adjustment = result.value as ReturnType<typeof confirmAdjustment>;
+      publish("stock:" + adjustment.outletId, "stock.changed", adjustment.outletId);
+    }
     return respondIdempotent(c, result);
   },
 );

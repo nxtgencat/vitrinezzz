@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { respondIdempotent, withIdempotency } from "../lib/idempotency";
+import { publish } from "../lib/realtime";
 import { jsonValidator, paramValidator, queryValidator } from "../lib/validate";
 import { requireCapability, requireStaff } from "../services/rbac";
 import { createBill, createVendor, getBill, issueBill, listBills, listVendors, updateBill, voidBill } from "../services/purchasing";
@@ -145,6 +146,10 @@ purchasingRoutes.post(
       body,
       run: (tx) => issueBill(tx, actor, id),
     });
+    if (!result.replayed && result.value) {
+      const bill = result.value as ReturnType<typeof issueBill>;
+      publish("stock:" + bill.outletId, "stock.changed", bill.outletId);
+    }
     return respondIdempotent(c, result);
   },
 );

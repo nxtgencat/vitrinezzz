@@ -12,6 +12,13 @@ export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 export type IdempotencyResult = {
   replayed: boolean;
   snapshot: string;
+  /**
+   * The `run` callback's return value — the committed response body — present
+   * only on a fresh execution, absent on a replay. `‡` routes derive their
+   * realtime publish facts from it and must not publish on a replay: the
+   * original execution already published (§4.8).
+   */
+  value?: Record<string, unknown>;
 };
 
 export type IdempotencyRun = (tx: Tx) => Record<string, unknown>;
@@ -100,7 +107,7 @@ export async function withIdempotency(opts: {
         expiresAt: now + IDEMPOTENCY_TTL_MS,
       })
       .run();
-    return { replayed: false, snapshot };
+    return { replayed: false, snapshot, value };
   });
 }
 

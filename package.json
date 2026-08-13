@@ -14,6 +14,7 @@
     "verify:deps": "bun run scripts/verify-deps.ts",
     "verify:stock": "bun run scripts/verify-stock.ts",
     "verify:audit": "bun run scripts/verify-audit.ts",
+    "verify:realtime": "bun run scripts/verify-realtime.ts",
     "smoke:catalog": "bun run scripts/smoke-catalog.ts",
     "smoke:media": "bun run scripts/smoke-media.ts",
     "smoke:inventory": "bun run scripts/smoke-inventory.ts",
@@ -29,7 +30,9 @@
     "test:sales": "bun test test/sales.test.ts",
     "test:payments": "bun test test/payments.test.ts",
     "test:returns": "bun test test/returns.test.ts",
-    "ci": "bun run typecheck && bun run verify:db && bun run verify:rbac && bun run test:rbac && bun run verify:immutability && bun run verify:hygiene && bun run verify:deps && bun run verify:stock && bun run verify:audit && bun run smoke:catalog && bun run smoke:media && bun run smoke:inventory && bun run smoke:purchasing && bun run smoke:sales && bun run smoke:storefront && bun run smoke:payments && bun run smoke:returns && bun run smoke:fulfillment && bun run test:core && bun run test:stock && bun run test:sales && bun run test:payments && bun run test:returns"
+    "test:realtime": "bun test test/realtime.test.ts",
+    "test:pdf": "bun test test/pdf.test.ts",
+    "ci": "bun run typecheck && bun run verify:db && bun run verify:rbac && bun run test:rbac && bun run verify:immutability && bun run verify:hygiene && bun run verify:deps && bun run verify:stock && bun run verify:audit && bun run verify:realtime && bun run smoke:catalog && bun run smoke:media && bun run smoke:inventory && bun run smoke:purchasing && bun run smoke:sales && bun run smoke:storefront && bun run smoke:payments && bun run smoke:returns && bun run smoke:fulfillment && bun run test:core && bun run test:stock && bun run test:sales && bun run test:payments && bun run test:returns && bun run test:realtime && bun run test:pdf"
   },
   "devDependencies": {
     "@types/bun": "latest",

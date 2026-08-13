@@ -8,6 +8,7 @@ import { fulfillmentRoutes } from "./routes/fulfillment";
 import { inventoryRoutes } from "./routes/inventory";
 import { paymentsRoutes } from "./routes/payments";
 import { purchasingRoutes } from "./routes/purchasing";
+import { realtimeRoutes } from "./routes/realtime";
 import { returnsRoutes } from "./routes/returns";
 import { salesRoutes } from "./routes/sales";
 import { storefrontRoutes } from "./routes/storefront";
@@ -51,5 +52,6 @@ app.route("/api", storefrontRoutes);
 app.route("/api", webhookRoutes);
 app.route("/api", returnsRoutes);
 app.route("/api", fulfillmentRoutes);
+app.route("/api", realtimeRoutes);
 
 export type AppType = typeof app;

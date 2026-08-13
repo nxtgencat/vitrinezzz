@@ -1,7 +1,11 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { invoices } from "../db/schema/orders";
+import { db } from "../lib/db";
 import { respondIdempotent, withIdempotency } from "../lib/idempotency";
+import { publish } from "../lib/realtime";
 import { jsonValidator, paramValidator, queryValidator } from "../lib/validate";
 import { requireCapability, requireStaff } from "../services/rbac";
 import { createShipment, deliverShipment, dispatchShipment, getShipment, listShipments, updateShipment } from "../services/fulfillment";
@@ -25,6 +29,15 @@ const shipmentUpdateSchema = z
     version: z.number().int().min(1),
   })
   .strict();
+
+/**
+ * Post-commit read for the shipment's order: shipments carry the invoice id,
+ * and `shipment.*` order events are written on the invoice's order — the
+ * route needs the order id to publish `order:{id}` (§4.8).
+ */
+function orderIdOfInvoice(invoiceId: string): string | null {
+  return db.select({ orderId: invoices.orderId }).from(invoices).where(eq(invoices.id, invoiceId)).get()?.orderId ?? null;
+}
 
 fulfillmentRoutes.get(
   "/shipments",
@@ -99,6 +112,13 @@ fulfillmentRoutes.post("/shipments/:id/dispatch", paramValidator(idParam), jsonV
     body,
     run: (tx) => dispatchShipment(tx, actor, id),
   });
+  if (!result.replayed && result.value) {
+    const shipment = result.value as ReturnType<typeof dispatchShipment>;
+    const orderId = orderIdOfInvoice(shipment.invoiceId);
+    if (orderId) {
+      publish("order:" + orderId, "shipment.dispatched", orderId);
+    }
+  }
   return respondIdempotent(c, result);
 });
 
@@ -115,5 +135,12 @@ fulfillmentRoutes.post("/shipments/:id/deliver", paramValidator(idParam), jsonVa
     body,
     run: (tx) => deliverShipment(tx, actor, id),
   });
+  if (!result.replayed && result.value) {
+    const shipment = result.value as ReturnType<typeof deliverShipment>;
+    const orderId = orderIdOfInvoice(shipment.invoiceId);
+    if (orderId) {
+      publish("order:" + orderId, "shipment.delivered", orderId);
+    }
+  }
   return respondIdempotent(c, result);
 });
