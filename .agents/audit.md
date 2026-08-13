@@ -65,7 +65,11 @@ rate limits trip; backup/verify-stock crons are non-fatal on failure).
 ## 4. Scenario suite (`bun test`) — integration + race/crash semantics
 
 All races R1–R9 (`architecture.md` §4.3), each with a dedicated test spinning up two
-concurrent callers against a shared temp DB and asserting exactly one succeeds:
+concurrent callers against a shared temp DB and asserting exactly one succeeds
+(locations: R1 `test/core.test.ts`, R2 `test/stock.test.ts`, R2-sales
+`test/sales.test.ts`, R3 `test/payments.test.ts`, R4 `test/returns.test.ts`,
+R5–R6–R8–R9 `test/stock.test.ts` — the four remaining races were added at phase 11
+sign-off, until then only the semantics were exercised sequentially in smokes):
 
 - **R1** — same idempotency key fired twice concurrently → single execution, replay
   byte-identical.

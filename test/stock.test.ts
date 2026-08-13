@@ -243,3 +243,312 @@ describe("R2 — manual-adjustment-style race (architecture.md §4.3)", () => {
     rmSync(`${raceDb}-shm`, { force: true });
   });
 });
+
+function seedProductVariant(seedDb: Database, productId: string, variantId: string, now: number): void {
+  seedDb
+    .prepare("INSERT INTO products (id, name, slug, hsnCode, gstRatePct, isActive, createdAt, updatedAt) VALUES (?, ?, ?, '', 0, 1, ?, ?)")
+    .run(productId, "race product", `race-${productId}`, now, now);
+  seedDb
+    .prepare(
+      "INSERT INTO variants (id, productId, name, sku, barcode, costPricePaise, sellingPricePaise, mrpPaise, isBase, isTaxable, isCustomerVisible, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, NULL, 100, 150, 150, 1, 1, 1, 1, ?, ?)",
+    )
+    .run(variantId, productId, "race variant", `RV-${randomUUIDv7()}`, now, now);
+}
+
+describe("R5 — concurrent draft edits (architecture.md §4.3)", () => {
+  test("two versioned PUTs on one transfer draft: exactly one 200 + one 409 stale_version, winner's line set survives", async () => {
+    const raceDb = join("data", `stock-race-${randomUUIDv7()}.sqlite`);
+    const raceVariantId = randomUUIDv7();
+    const raceProductId = randomUUIDv7();
+    const fromOutletId = randomUUIDv7();
+    const toOutletId = randomUUIDv7();
+    const batchA = randomUUIDv7();
+    const batchB = randomUUIDv7();
+    const transferId = randomUUIDv7();
+
+    const seedDb = new Database(raceDb);
+    seedDb.run("PRAGMA journal_mode = WAL;");
+    seedDb.run("PRAGMA foreign_keys = ON;");
+    const seed = drizzle(seedDb);
+    applyMigrations(seed);
+    const now = Date.now();
+    seedDb.run("BEGIN IMMEDIATE");
+    try {
+      seedDb
+        .prepare("INSERT INTO outlets (id, name, isActive, createdAt, updatedAt) VALUES (?, ?, 1, ?, ?)")
+        .run(fromOutletId, "race outlet A", now, now);
+      seedDb
+        .prepare("INSERT INTO outlets (id, name, isActive, createdAt, updatedAt) VALUES (?, ?, 1, ?, ?)")
+        .run(toOutletId, "race outlet B", now, now);
+      seedProductVariant(seedDb, raceProductId, raceVariantId, now);
+      seedDb
+        .prepare("INSERT INTO batches (id, variantId, batchNumber, expiryDate, costPricePaise, isActive, createdAt) VALUES (?, ?, ?, NULL, 100, 1, ?)")
+        .run(batchA, raceVariantId, "R5-A", now);
+      seedDb
+        .prepare("INSERT INTO batches (id, variantId, batchNumber, expiryDate, costPricePaise, isActive, createdAt) VALUES (?, ?, ?, NULL, 100, 1, ?)")
+        .run(batchB, raceVariantId, "R5-B", now);
+      seedDb
+        .prepare("INSERT INTO stock_transfers (id, transferNumber, fromOutletId, toOutletId, status, version, createdAt, updatedAt) VALUES (?, ?, ?, ?, 'draft', 1, ?, ?)")
+        .run(transferId, "TR-R5", fromOutletId, toOutletId, now, now);
+      seedDb
+        .prepare("INSERT INTO stock_transfer_items (id, stockTransferId, variantId, batchId, quantity) VALUES (?, ?, ?, ?, 1)")
+        .run(randomUUIDv7(), transferId, raceVariantId, batchA);
+      seedDb.run("COMMIT");
+    } catch (err) {
+      seedDb.run("ROLLBACK");
+      throw err;
+    }
+    seedDb.close();
+
+    const fixture = join(import.meta.dir, "fixtures", "draft-edit-worker.ts");
+    const base = {
+      ...process.env,
+      DATABASE_PATH: raceDb,
+      DRAFT_DB: raceDb,
+      DRAFT_ID: transferId,
+      DRAFT_VERSION: "1",
+      DRAFT_FROM: fromOutletId,
+      DRAFT_TO: toOutletId,
+      DRAFT_VARIANT: raceVariantId,
+    };
+    const spawnA = async (): Promise<number> => {
+      const proc = Bun.spawn(["bun", "run", fixture], {
+        cwd: process.cwd(),
+        env: { ...base, DRAFT_BATCH: batchA, DRAFT_QTY: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return await proc.exited;
+    };
+    const spawnB = async (): Promise<number> => {
+      const proc = Bun.spawn(["bun", "run", fixture], {
+        cwd: process.cwd(),
+        env: { ...base, DRAFT_BATCH: batchB, DRAFT_QTY: "2" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return await proc.exited;
+    };
+    const [exitA, exitB] = await Promise.all([spawnA(), spawnB()]);
+    expect([exitA, exitB].sort()).toEqual([0, 3]);
+
+    const checkDb = new Database(raceDb);
+    checkDb.run("PRAGMA journal_mode = WAL;");
+    const doc = checkDb
+      .query<{ version: number }, [string]>("SELECT version FROM stock_transfers WHERE id = ?")
+      .get(transferId)!;
+    expect(doc.version).toBe(2);
+    const items = checkDb
+      .query<{ batchId: string }, [string]>("SELECT batchId FROM stock_transfer_items WHERE stockTransferId = ?")
+      .all(transferId);
+    expect(items.length).toBe(1);
+    expect([batchA, batchB]).toContain(items[0]!.batchId);
+    checkDb.close();
+
+    rmSync(raceDb, { force: true });
+    rmSync(`${raceDb}-wal`, { force: true });
+    rmSync(`${raceDb}-shm`, { force: true });
+  });
+});
+
+describe("R6 — duplicate batch number race (architecture.md §4.3)", () => {
+  test("two concurrent creates of one (variantId, batchNumber): exactly one 200 + one 409 duplicate_batch, one row survives", async () => {
+    const raceDb = join("data", `stock-race-${randomUUIDv7()}.sqlite`);
+    const raceVariantId = randomUUIDv7();
+    const raceProductId = randomUUIDv7();
+
+    const seedDb = new Database(raceDb);
+    seedDb.run("PRAGMA journal_mode = WAL;");
+    seedDb.run("PRAGMA foreign_keys = ON;");
+    const seed = drizzle(seedDb);
+    applyMigrations(seed);
+    const now = Date.now();
+    seedDb.run("BEGIN IMMEDIATE");
+    try {
+      seedProductVariant(seedDb, raceProductId, raceVariantId, now);
+      seedDb.run("COMMIT");
+    } catch (err) {
+      seedDb.run("ROLLBACK");
+      throw err;
+    }
+    seedDb.close();
+
+    const fixture = join(import.meta.dir, "fixtures", "batch-worker.ts");
+    const env = {
+      ...process.env,
+      DATABASE_PATH: raceDb,
+      BATCH_DB: raceDb,
+      BATCH_VARIANT: raceVariantId,
+      BATCH_NUMBER: "RACE-6",
+    };
+    const spawn = async (): Promise<number> => {
+      const proc = Bun.spawn(["bun", "run", fixture], { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" });
+      return await proc.exited;
+    };
+    const [exitA, exitB] = await Promise.all([spawn(), spawn()]);
+    expect([exitA, exitB].sort()).toEqual([0, 3]);
+
+    const checkDb = new Database(raceDb);
+    checkDb.run("PRAGMA journal_mode = WAL;");
+    const batches = checkDb
+      .query<{ n: number }, [string, string]>("SELECT count(*) AS n FROM batches WHERE variantId = ? AND batchNumber = ?")
+      .get(raceVariantId, "RACE-6")!;
+    expect(batches.n).toBe(1);
+    const audits = checkDb
+      .query<{ n: number }, []>("SELECT count(*) AS n FROM audit_events WHERE entityType = 'batch'")
+      .get()!;
+    expect(audits.n).toBe(1);
+    checkDb.close();
+
+    rmSync(raceDb, { force: true });
+    rmSync(`${raceDb}-wal`, { force: true });
+    rmSync(`${raceDb}-shm`, { force: true });
+  });
+});
+
+describe("R8 — concurrent sales from the same batch, different outlets (architecture.md §4.3)", () => {
+  test("one unit per outlet on a shared batch: both consumers succeed, each outlet lands on 0, never negative", async () => {
+    const raceDb = join("data", `stock-race-${randomUUIDv7()}.sqlite`);
+    const raceBatchId = randomUUIDv7();
+    const raceVariantId = randomUUIDv7();
+    const raceProductId = randomUUIDv7();
+    const outletA = randomUUIDv7();
+    const outletB = randomUUIDv7();
+
+    const seedDb = new Database(raceDb);
+    seedDb.run("PRAGMA journal_mode = WAL;");
+    seedDb.run("PRAGMA foreign_keys = ON;");
+    const seed = drizzle(seedDb);
+    applyMigrations(seed);
+    const now = Date.now();
+    seedDb.run("BEGIN IMMEDIATE");
+    try {
+      seedDb
+        .prepare("INSERT INTO outlets (id, name, isActive, createdAt, updatedAt) VALUES (?, ?, 1, ?, ?)")
+        .run(outletA, "race outlet A", now, now);
+      seedDb
+        .prepare("INSERT INTO outlets (id, name, isActive, createdAt, updatedAt) VALUES (?, ?, 1, ?, ?)")
+        .run(outletB, "race outlet B", now, now);
+      seedProductVariant(seedDb, raceProductId, raceVariantId, now);
+      seedDb
+        .prepare("INSERT INTO batches (id, variantId, batchNumber, expiryDate, costPricePaise, isActive, createdAt) VALUES (?, ?, ?, NULL, 100, 1, ?)")
+        .run(raceBatchId, raceVariantId, "R8-BATCH", now);
+      for (const outletId of [outletA, outletB]) {
+        seedDb
+          .prepare(
+            "INSERT INTO stock_movements (id, variantId, outletId, batchId, delta, reason, sourceType, sourceId, createdAt) VALUES (?, ?, ?, ?, 1, 'initial', 'seed', NULL, ?)",
+          )
+          .run(randomUUIDv7(), raceVariantId, outletId, raceBatchId, now);
+        seedDb
+          .prepare(
+            "INSERT INTO stock_levels (variantId, outletId, batchId, quantity, lastMovementId, updatedAt) VALUES (?, ?, ?, 1, ?, ?)",
+          )
+          .run(raceVariantId, outletId, raceBatchId, randomUUIDv7(), now);
+      }
+      seedDb.run("COMMIT");
+    } catch (err) {
+      seedDb.run("ROLLBACK");
+      throw err;
+    }
+    seedDb.close();
+
+    const fixture = join(import.meta.dir, "fixtures", "adjust-worker.ts");
+    const base = {
+      ...process.env,
+      DATABASE_PATH: raceDb,
+      ADJUST_DB: raceDb,
+      ADJUST_VARIANT: raceVariantId,
+      ADJUST_BATCH: raceBatchId,
+    };
+    const spawnAt = (outletId: string): (() => Promise<number>) => {
+      return async () => {
+        const proc = Bun.spawn(["bun", "run", fixture], {
+          cwd: process.cwd(),
+          env: { ...base, ADJUST_OUTLET: outletId },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        return await proc.exited;
+      };
+    };
+    const [exitA, exitB] = await Promise.all([spawnAt(outletA)(), spawnAt(outletB)()]);
+    expect([exitA, exitB].sort()).toEqual([0, 0]);
+
+    const checkDb = new Database(raceDb);
+    checkDb.run("PRAGMA journal_mode = WAL;");
+    for (const outletId of [outletA, outletB]) {
+      const qty = checkDb
+        .query<{ quantity: number }, [string, string]>("SELECT quantity FROM stock_levels WHERE outletId = ? AND batchId = ?")
+        .get(outletId, raceBatchId)!;
+      expect(qty.quantity).toBe(0);
+    }
+    const moves = checkDb
+      .query<{ n: number }, [string]>("SELECT count(*) AS n FROM stock_movements WHERE batchId = ? AND reason = 'adjustment_out'")
+      .get(raceBatchId)!;
+    expect(moves.n).toBe(2);
+    checkDb.close();
+
+    rmSync(raceDb, { force: true });
+    rmSync(`${raceDb}-wal`, { force: true });
+    rmSync(`${raceDb}-shm`, { force: true });
+  });
+});
+
+describe("R9 — concurrent catalog edits under audit (architecture.md §4.3)", () => {
+  test("two batch creates on one variant: both succeed, both audit rows written", async () => {
+    const raceDb = join("data", `stock-race-${randomUUIDv7()}.sqlite`);
+    const raceVariantId = randomUUIDv7();
+    const raceProductId = randomUUIDv7();
+
+    const seedDb = new Database(raceDb);
+    seedDb.run("PRAGMA journal_mode = WAL;");
+    seedDb.run("PRAGMA foreign_keys = ON;");
+    const seed = drizzle(seedDb);
+    applyMigrations(seed);
+    const now = Date.now();
+    seedDb.run("BEGIN IMMEDIATE");
+    try {
+      seedProductVariant(seedDb, raceProductId, raceVariantId, now);
+      seedDb.run("COMMIT");
+    } catch (err) {
+      seedDb.run("ROLLBACK");
+      throw err;
+    }
+    seedDb.close();
+
+    const fixture = join(import.meta.dir, "fixtures", "batch-worker.ts");
+    const base = {
+      ...process.env,
+      DATABASE_PATH: raceDb,
+      BATCH_DB: raceDb,
+      BATCH_VARIANT: raceVariantId,
+    };
+    const spawn = async (batchNumber: string): Promise<number> => {
+      const proc = Bun.spawn(["bun", "run", fixture], {
+        cwd: process.cwd(),
+        env: { ...base, BATCH_NUMBER: batchNumber },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      return await proc.exited;
+    };
+    const [exitA, exitB] = await Promise.all([spawn("R9-A"), spawn("R9-B")]);
+    expect([exitA, exitB].sort()).toEqual([0, 0]);
+
+    const checkDb = new Database(raceDb);
+    checkDb.run("PRAGMA journal_mode = WAL;");
+    const batches = checkDb
+      .query<{ n: number }, [string]>("SELECT count(*) AS n FROM batches WHERE variantId = ?")
+      .get(raceVariantId)!;
+    expect(batches.n).toBe(2);
+    const audits = checkDb
+      .query<{ n: number }, []>("SELECT count(*) AS n FROM audit_events WHERE entityType = 'batch'")
+      .get()!;
+    expect(audits.n).toBe(2);
+    checkDb.close();
+
+    rmSync(raceDb, { force: true });
+    rmSync(`${raceDb}-wal`, { force: true });
+    rmSync(`${raceDb}-shm`, { force: true });
+  });
+});
