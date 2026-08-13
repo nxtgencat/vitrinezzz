@@ -17,10 +17,11 @@
     "smoke:catalog": "bun run scripts/smoke-catalog.ts",
     "smoke:media": "bun run scripts/smoke-media.ts",
     "smoke:inventory": "bun run scripts/smoke-inventory.ts",
+    "smoke:purchasing": "bun run scripts/smoke-purchasing.ts",
     "test:rbac": "bun test test/rbac.test.ts",
     "test:core": "bun test test/core.test.ts",
     "test:stock": "bun test test/stock.test.ts",
-    "ci": "bun run typecheck && bun run verify:db && bun run verify:rbac && bun run test:rbac && bun run verify:immutability && bun run verify:hygiene && bun run verify:deps && bun run verify:stock && bun run verify:audit && bun run smoke:catalog && bun run smoke:media && bun run smoke:inventory && bun run test:core && bun run test:stock"
+    "ci": "bun run typecheck && bun run verify:db && bun run verify:rbac && bun run test:rbac && bun run verify:immutability && bun run verify:hygiene && bun run verify:deps && bun run verify:stock && bun run verify:audit && bun run smoke:catalog && bun run smoke:media && bun run smoke:inventory && bun run smoke:purchasing && bun run test:core && bun run test:stock"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -7,6 +7,7 @@ export const AUDIT_ENTITY_TYPES = [
   "product",
   "variant",
   "batch",
+  "vendor",
   "outlet",
   "role",
   "staff",

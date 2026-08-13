@@ -108,7 +108,7 @@ with an auto-seeded `Admin` role (all 9 capabilities); `isProtected = true`.
 | POST | `/api/vendors` | R(canManagePurchases) | I | `{ name, phone, gstin? }`. |
 | GET/POST | `/api/purchase-bills[/:id]` | R(canManagePurchases) | I on POST | Draft CRUD, items + signed charges. |
 | PUT | `/api/purchase-bills/:id` | R(canManagePurchases) | I | Draft only; versioned. |
-| POST | `/api/purchase-bills/:id/issue` ‡ | R(canManagePurchases) | I | Recomputes money (floor-tax rule), creates-or-reuses batches by `(variantId, batchNumber)`, writes `purchase` in-movements per line, snapshots totals. Re-issue → `409 already_issued`, zero rows. |
+| POST | `/api/purchase-bills/:id/issue` ‡ | R(canManagePurchases) | I | Recomputes money (floor-tax rule), creates-or-reuses batches by `(variantId, batchNumber)`, writes `purchase` in-movements per line, snapshots totals. Every line must carry a `batchNumber` at issue (else `400`); an existing `(variantId, batchNumber)` batch is reused untouched, a missing one is created with `costPricePaise = unitCostPaise`. Re-issue → `409 already_issued`, zero rows. |
 | POST | `/api/purchase-bills/:id/void` | R(canManagePurchases) | I | Draft only — never reverses stock. |
 
 ## 6. Sales
@@ -131,7 +131,7 @@ with an auto-seeded `Admin` role (all 9 capabilities); `isProtected = true`.
 | Method | Path | Guard | Idem | Notes |
 |---|---|---|---|---|
 | GET | `/api/payments` | R(canManagePayments) | – | Filters `direction`, `partyType`/`partyId`, date range. |
-| POST | `/api/payments` | R(canManagePayments) | I | `{ direction, partyType, partyId, invoiceId? \| purchaseBillId? \| returnId?, amountPaise, mode, outletId }`. Received/made capped at outstanding balance (`409 over_payment`); refund capped at paid balance (`409 over_return` scope reused where applicable). |
+| POST | `/api/payments` | R(canManagePayments) | I | `{ direction, partyType, partyId, invoiceId? \| purchaseBillId? \| returnId?, amountPaise, mode, outletId }`. Exactly one document link (XOR). Received/made capped at outstanding balance (`409 over_payment`); refund capped at paid balance (`409 over_return` scope reused where applicable). The linked document must be `issued`/confirmed (else `409 invalid_transition`), and `partyId` must be the document's own party. |
 | POST | `/api/webhooks/payments/:gateway` | * (signature-verified) | – | No idempotency header — see `architecture.md` §4.2. HMAC verified before any DB access; dedupe on `payments UNIQUE(gateway, gatewayEventId)`; replay → `200`, zero side effects. Success path: mark payment `confirmed` → run the pending order's confirm+issue path (final stock gate re-runs; short stock triggers the auto-cancel+refund compensation, `architecture.md` §4.7). |
 
 ## 8. Returns & fulfillment

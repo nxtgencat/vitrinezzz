@@ -25,6 +25,8 @@ const AUDITED_MUTATIONS: {
   { route: "POST /api/variants", serviceFile: "services/catalog.ts", entityTypes: ["variant"] },
   { route: "PUT /api/variants/:id", serviceFile: "services/catalog.ts", entityTypes: ["variant"] },
   { route: "POST /api/inventory/batches", serviceFile: "services/stock.ts", entityTypes: ["batch"] },
+  { route: "POST /api/vendors", serviceFile: "services/purchasing.ts", entityTypes: ["vendor"] },
+  { route: "POST /api/purchase-bills/:id/issue", serviceFile: "services/purchasing.ts", entityTypes: ["batch"] },
   { route: "POST /api/products/:id/media", serviceFile: "services/media.ts", entityTypes: ["media"] },
   { route: "POST /api/variants/:id/media", serviceFile: "services/media.ts", entityTypes: ["media"] },
   { route: "DELETE /api/media/:id", serviceFile: "services/media.ts", entityTypes: ["media"] },

@@ -5,6 +5,8 @@ import { auth } from "./lib/auth";
 import { handleError, notFoundHandler } from "./lib/errors";
 import { catalogRoutes } from "./routes/catalog";
 import { inventoryRoutes } from "./routes/inventory";
+import { paymentsRoutes } from "./routes/payments";
+import { purchasingRoutes } from "./routes/purchasing";
 
 /**
  * The assembled Hono app — every route, hook, and middleware. `index.ts`
@@ -37,5 +39,7 @@ app.get("/api/health", (c) => {
 
 app.route("/api", catalogRoutes);
 app.route("/api", inventoryRoutes);
+app.route("/api", purchasingRoutes);
+app.route("/api", paymentsRoutes);
 
 export type AppType = typeof app;

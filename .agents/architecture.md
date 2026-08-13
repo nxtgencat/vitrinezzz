@@ -469,12 +469,15 @@ price." The fix: keep three purpose-built fact tables, add one lean fourth.
 createdAt)` — flat, no version chain, no causation graph.
 
 **Trigger points.** Every service function that creates, updates, or deactivates a row
-in `categories`, `products`, `variants`, `batches`, `outlets`, `roles`,
+in `categories`, `products`, `variants`, `batches`, `vendors`, `outlets`, `roles`,
 `staff_profiles`, `settings`, or `media` writes one `audit_events` row in the same
 transaction as the mutation, before returning. Not opt-in per route — part of the write
 path for those domains, enforced by `verify-audit` (`audit.md` §2), which
 cross-references every mutating route on an audited domain against a matching
-`audit_events` write in its service function.
+`audit_events` write in its service function. (`vendors` joined the list with the
+purchasing phase — a vendor record is reference data like any catalog row, and the
+compliance question is the same; `customers` stay out because they are auto-provisioned
+by the auth hook, never mutated by a staff route.)
 
 **What does not write here.** `stock_movements`, `payments`, and `order_events` keep
 their own tables and triggers. Cart/wishlist writes never produce an audit row — they
