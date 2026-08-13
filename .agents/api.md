@@ -75,8 +75,11 @@ with an auto-seeded `Admin` role (all 9 capabilities); `isProtected = true`.
 | GET | `/api/variants` | * | – | Filters `productId`, `q` (name/sku), `outletId` (joins per-outlet stock), `active`. |
 | POST | `/api/variants` | R(canManageCatalog) | I | Duplicate `sku`/`barcode` → `409 duplicate_sku`. |
 | PUT | `/api/variants/:id` | R(canManageCatalog) | I | |
-| GET/POST | `/api/products/:id/media` , `/api/variants/:id/media` | * / R(canManageCatalog) | I on POST | Multipart upload; validates MIME (`jpeg/png/webp`) + size (≤8MB); generates WebP thumbnail; writes `media` + `audit_events` in one tx. |
-| DELETE | `/api/media/:id` | R(canManageCatalog) | I | Hard delete; writes `audit_events`. |
+| GET | `/api/products/:id/media` | * | – | List (deterministic `createdAt`, `id` order). Media survive owner deactivation — no cascade delete. |
+| GET | `/api/variants/:id/media` | * | – | List (deterministic order). |
+| GET | `/api/media/:id` | * | – | Serves the original bytes with `content-type: mimeType` — the only way to fetch stored media bytes. `404` when the row or the underlying storage file is gone. |
+| POST | `/api/products/:id/media` , `/api/variants/:id/media` | R(canManageCatalog) | I | Multipart `{ file, altText? }`. Effective MIME comes from the filename extension (`jpg`/`jpeg`/`png`/`webp`, `architecture.md` §4.10); size ≤8MB; WebP thumbnail generated; corrupt-but-valid-MIME bytes → `400 image decode failed`. The idempotency hash binds the file's sha256 — same key with different bytes → `409 idempotency_mismatch`. Storage files are written before the tx and removed on replay/rollback. Writes `media` + `audit_events` in one tx. |
+| DELETE | `/api/media/:id` | R(canManageCatalog) | I | Hard delete; removes the stored original + thumbnail files after the tx; writes `audit_events`. |
 
 ## 4. Inventory
 
@@ -84,12 +87,17 @@ with an auto-seeded `Admin` role (all 9 capabilities); `isProtected = true`.
 |---|---|---|---|---|
 | POST | `/api/inventory/batches` | R(canManageInventory) | I | The only batch entry point outside purchase-bill-issue's create-or-reuse. `UNIQUE(variantId, batchNumber)` violation → `409 duplicate_batch`. |
 | GET | `/api/inventory/stock-levels` | S | – | Filters `outletId`, `variantId`, low-stock threshold. Display read — never a decision source. |
-| GET/POST | `/api/inventory/transfers[/:id]` | R(canManageInventory) | I on POST | `fromOutletId ≠ toOutletId` enforced. |
-| PUT | `/api/inventory/transfers/:id` | R(canManageInventory) | I | Draft only; versioned — `409 stale_version` on conflict. |
-| POST | `/api/inventory/transfers/:id/confirm` ‡ | R(canManageInventory) | I | Atomic — one insufficient line rolls back the whole document, `409 insufficient_stock`, zero movements written. Writes paired `transfer_out`/`transfer_in`. |
+| GET | `/api/inventory/transfers` | R(canManageInventory) | – | List; filter `status` (`draft\|confirmed\|void`), paginated. |
+| GET | `/api/inventory/transfers/:id` | S | – | Header + items. |
+| POST | `/api/inventory/transfers` | R(canManageInventory) | I | `{ fromOutletId, toOutletId, items: [{ variantId, batchId, quantity ≥ 1 }] }`; `fromOutletId ≠ toOutletId` else `400 same outlet`. A transfer spans two outlets, so **no outlet scope applies** — an outlet-scoped role is denied (`403`). |
+| PUT | `/api/inventory/transfers/:id` | R(canManageInventory) | I | Full-replace of a draft: create body + `version`; `409 stale_version` on conflict, `409 invalid_transition` on confirmed/voided. |
+| POST | `/api/inventory/transfers/:id/confirm` ‡ | R(canManageInventory) | I | Draft-only. One insufficient line rolls back the whole document — `409 insufficient_stock`, zero movements written. Writes paired `transfer_out`/`transfer_in` (`sourceType=transfer`). Re-confirm → `409 invalid_transition`, zero movements. |
 | POST | `/api/inventory/transfers/:id/void` | R(canManageInventory) | I | Draft only. |
-| GET/POST | `/api/inventory/adjustments[/:id]` | R(canManageInventory) | I on POST | |
-| POST | `/api/inventory/adjustments/:id/confirm` ‡ | R(canManageInventory) | I | Writes signed `adjustment_in`/`adjustment_out` per line against explicit batches. |
+| GET | `/api/inventory/adjustments` | R(canManageInventory) | – | List; filter `status`, paginated. Scoped to the acting outlet. |
+| GET | `/api/inventory/adjustments/:id` | S | – | Header + items. |
+| POST | `/api/inventory/adjustments` | R(canManageInventory) | I | `{ outletId, reason, items: [{ variantId, batchId, quantity ≠ 0 }] }` — signed quantity (`+` in, `-` out). `unitValuePaise` is server-derived from the batch's `costPricePaise` at line-create (`schema.md` §4.6) — never client-supplied. Scoped to `outletId`. |
+| PUT | `/api/inventory/adjustments/:id` | R(canManageInventory) | I | Full-replace of a draft: create body + `version`; `409 stale_version` on conflict. |
+| POST | `/api/inventory/adjustments/:id/confirm` ‡ | R(canManageInventory) | I | Draft-only. Writes signed `adjustment_in`/`adjustment_out` per line against explicit batches (`sourceType=adjustment`). An out-line exceeding available stock rolls back the whole document — `409 insufficient_stock`, zero movements. Re-confirm → `409 invalid_transition`. |
 | POST | `/api/inventory/adjustments/:id/void` | R(canManageInventory) | I | Draft only. |
 
 ## 5. Purchasing

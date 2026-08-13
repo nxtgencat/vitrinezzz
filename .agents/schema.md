@@ -126,8 +126,13 @@ adjustment_out`), `sourceType`, `sourceId?`, `createdAt`. PK `id`; idx
 `version`, `createdAt`, `updatedAt`. PK `id`; UNIQUE `(adjustmentNumber)`.
 
 ### 4.6 adjustment_items `[CHILD]` — CASCADE
-`id`, `adjustmentId`, `variantId`, `batchId`, `quantity` (signed), `unitValuePaise`.
-PK `id`; idx `(adjustmentId)`.
+`id`, `adjustmentId`, `variantId`, `batchId`, `quantity` (signed: `+` in, `-` out),
+`unitValuePaise`. PK `id`; idx `(adjustmentId)`.
+
+`unitValuePaise` is **never client-supplied** — it is derived server-side from the
+batch's `costPricePaise` at line-create time inside the deciding transaction. It only
+records the value at adjustment time for reference; stock valuation is a non-goal
+(`architecture.md` §5).
 
 ---
 

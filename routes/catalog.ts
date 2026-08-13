@@ -1,4 +1,6 @@
+import { randomUUIDv7 } from "bun";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { and, asc, count, desc, eq, like, or, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -7,8 +9,11 @@ import { media } from "../db/schema/media";
 import { stockLevels } from "../db/schema/inventory";
 import { db } from "../lib/db";
 import { respondIdempotent, withIdempotency } from "../lib/idempotency";
+import { logger } from "../lib/logger";
+import { storage } from "../lib/storage";
 import { jsonValidator, paramValidator, queryValidator } from "../lib/validate";
 import { requireCapability, requireStaff } from "../services/rbac";
+import type { StaffActor } from "../services/rbac";
 import {
   createCategory,
   createProduct,
@@ -18,6 +23,15 @@ import {
   updateProduct,
   updateVariant,
 } from "../services/catalog";
+import {
+  MEDIA_MAX_BYTES,
+  deleteMedia,
+  isMediaMimeType,
+  makeThumbnail,
+  mimeExt,
+  uploadMedia,
+} from "../services/media";
+import type { MediaMimeType } from "../services/media";
 
 export const catalogRoutes = new Hono();
 
@@ -346,3 +360,170 @@ catalogRoutes.put(
     return respondIdempotent(c, result);
   },
 );
+
+/**
+ * Best-effort storage cleanup for files written for an upload attempt that
+ * was rolled back, replayed, or rejected — never throws (degrade safely).
+ */
+async function cleanupFiles(keys: string[]): Promise<void> {
+  for (const key of keys) {
+    try {
+      await storage.delete(key);
+    } catch (err) {
+      logger.warn({ err, key }, "media cleanup failed");
+    }
+  }
+}
+
+/**
+ * Shared multipart upload path for product/variant media (`api.md` §3):
+ * validates MIME + size, generates the WebP thumbnail, writes both files to
+ * storage, then inserts `media` + `audit_events` in one transaction. File I/O
+ * is async and cannot live inside a transaction (T1) — the route writes the
+ * files first, and deletes them again on replay/rollback, so the DB is always
+ * consistent even though a failed attempt may briefly leave orphaned bytes.
+ * The idempotency hash binds the request to the file's sha256, so reusing a
+ * key with different bytes is a `409 idempotency_mismatch`.
+ */
+async function handleUpload(
+  c: Context,
+  actor: StaffActor,
+  ownerType: "product" | "variant",
+  ownerId: string,
+): Promise<Response> {
+  const form = await c.req.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) {
+    throw new HTTPException(400, { message: "media file required" });
+  }
+  if (!isMediaMimeType(file.type)) {
+    throw new HTTPException(400, { message: "unsupported media type" });
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.length > MEDIA_MAX_BYTES) {
+    throw new HTTPException(400, { message: "file too large" });
+  }
+  const altRaw = form.get("altText");
+  const altText = typeof altRaw === "string" ? altRaw.trim() : null;
+  if (altText !== null && altText.length > 500) {
+    throw new HTTPException(400, { message: "altText too long" });
+  }
+  const mimeType = file.type as MediaMimeType;
+  const thumb = await makeThumbnail(bytes);
+  const mediaId = randomUUIDv7();
+  const path = `media/${mediaId}.${mimeExt(mimeType)}`;
+  const thumbPath = `media/${mediaId}.webp`;
+  await storage.put(path, bytes, mimeType);
+  await storage.put(thumbPath, thumb, "image/webp");
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(bytes);
+  const body = {
+    ownerType,
+    ownerId,
+    altText,
+    fileName: file.name,
+    mimeType,
+    sizeBytes: bytes.length,
+    sha256: hasher.digest("hex"),
+  };
+  const key = c.req.header("Idempotency-Key");
+  let result;
+  try {
+    result = await withIdempotency({
+      operation: `${c.req.method} ${c.req.routePath}`,
+      key,
+      actorId: actor.userId,
+      body,
+      run: (tx) =>
+        uploadMedia(tx, actor, {
+          ownerType,
+          ownerId,
+          path,
+          thumbPath,
+          mimeType,
+          sizeBytes: bytes.length,
+          altText,
+        }),
+    });
+  } catch (err) {
+    await cleanupFiles([path, thumbPath]);
+    throw err;
+  }
+  if (result.replayed) {
+    await cleanupFiles([path, thumbPath]);
+  }
+  return respondIdempotent(c, result);
+}
+
+catalogRoutes.get("/products/:id/media", paramValidator(idParam), (c) => {
+  const { id } = c.req.valid("param");
+  const owner = db.select({ id: products.id }).from(products).where(eq(products.id, id)).get();
+  if (!owner) throw new HTTPException(404, { message: "not_found" });
+  const rows = db
+    .select()
+    .from(media)
+    .where(and(eq(media.ownerType, "product"), eq(media.ownerId, id)))
+    .orderBy(asc(media.createdAt), asc(media.id))
+    .all();
+  return c.json({ data: rows });
+});
+
+catalogRoutes.post("/products/:id/media", paramValidator(idParam), async (c) => {
+  const actor = await requireStaff(c.req.raw.headers);
+  requireCapability(actor, "canManageCatalog");
+  const { id } = c.req.valid("param");
+  const owner = db.select({ id: products.id }).from(products).where(eq(products.id, id)).get();
+  if (!owner) throw new HTTPException(404, { message: "not_found" });
+  return handleUpload(c, actor, "product", id);
+});
+
+catalogRoutes.get("/variants/:id/media", paramValidator(idParam), (c) => {
+  const { id } = c.req.valid("param");
+  const owner = db.select({ id: variants.id }).from(variants).where(eq(variants.id, id)).get();
+  if (!owner) throw new HTTPException(404, { message: "not_found" });
+  const rows = db
+    .select()
+    .from(media)
+    .where(and(eq(media.ownerType, "variant"), eq(media.ownerId, id)))
+    .orderBy(asc(media.createdAt), asc(media.id))
+    .all();
+  return c.json({ data: rows });
+});
+
+catalogRoutes.post("/variants/:id/media", paramValidator(idParam), async (c) => {
+  const actor = await requireStaff(c.req.raw.headers);
+  requireCapability(actor, "canManageCatalog");
+  const { id } = c.req.valid("param");
+  const owner = db.select({ id: variants.id }).from(variants).where(eq(variants.id, id)).get();
+  if (!owner) throw new HTTPException(404, { message: "not_found" });
+  return handleUpload(c, actor, "variant", id);
+});
+
+catalogRoutes.get("/media/:id", paramValidator(idParam), async (c) => {
+  const { id } = c.req.valid("param");
+  const row = db.select().from(media).where(eq(media.id, id)).get();
+  if (!row) throw new HTTPException(404, { message: "not_found" });
+  const bytes = await storage.get(row.path);
+  if (!bytes) throw new HTTPException(404, { message: "not_found" });
+  return new Response(bytes, { status: 200, headers: { "content-type": row.mimeType } });
+});
+
+catalogRoutes.delete("/media/:id", paramValidator(idParam), async (c) => {
+  const actor = await requireStaff(c.req.raw.headers);
+  requireCapability(actor, "canManageCatalog");
+  const { id } = c.req.valid("param");
+  const row = db.select().from(media).where(eq(media.id, id)).get();
+  if (!row) throw new HTTPException(404, { message: "not_found" });
+  const key = c.req.header("Idempotency-Key");
+  const result = await withIdempotency({
+    operation: `${c.req.method} ${c.req.routePath}`,
+    key,
+    actorId: actor.userId,
+    body: {},
+    run: (tx) => deleteMedia(tx, actor, id),
+  });
+  if (!result.replayed) {
+    await cleanupFiles([row.path, row.thumbPath].filter((k): k is string => Boolean(k)));
+  }
+  return respondIdempotent(c, result);
+});

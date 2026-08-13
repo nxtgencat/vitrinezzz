@@ -16,3 +16,18 @@ export function docNumber(prefix: string): string {
   }
   return `${prefix}-${out}`;
 }
+
+/**
+ * Draws a fresh document number that passes the caller's `isTaken` check
+ * (regenerated on collision, `architecture.md` §4.15 — the collision
+ * probability at retail volume is ~0.14%, so a caller that hits a UNIQUE
+ * violation simply redraws). Throws only if the 35-bit space is somehow
+ * exhausted after 10 draws — practically unreachable.
+ */
+export function freshDocNumber(prefix: string, isTaken: (candidate: string) => boolean): string {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const candidate = docNumber(prefix);
+    if (!isTaken(candidate)) return candidate;
+  }
+  throw new Error("document number space exhausted");
+}

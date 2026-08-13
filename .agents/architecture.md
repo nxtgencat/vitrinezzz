@@ -404,11 +404,26 @@ WebKit backend has no CDP bridge and cannot print.
 ### 4.10 Media
 
 Single `media` table, polymorphic owner (`product` | `variant`). Upload: staff with
-`canManageCatalog` posts a multipart file; the handler validates MIME type
-(`image/jpeg`, `image/png`, `image/webp` only) and size (≤8MB), writes the original via
-the storage adapter, generates a WebP thumbnail with `Bun.Image`, writes the thumbnail,
-then inserts the `media` row and an `audit_events` row in **one transaction**. Delete
-follows the same pattern.
+`canManageCatalog` posts a multipart file (`{ file, altText? }`); the handler
+validates size (≤8MB), writes the original via the storage adapter, generates a WebP
+thumbnail with `Bun.Image` (`§6`), writes the thumbnail, then inserts the `media` row
+and an `audit_events` row in **one transaction**. Delete follows the same pattern.
+
+**The effective MIME type is derived from the filename extension** (`jpg`/`jpeg`/
+`png`/`webp`), not from any declared part Content-Type: Bun's multipart parser infers
+`File.type` from the extension and ignores the declared header. The extension gate is
+therefore the real MIME gate; a corrupt-but-valid-MIME upload still fails at thumbnail
+decode with `400 image decode failed` (a client bug, not a 500).
+
+**Serving**: `GET /api/media/:id` is the only way to fetch stored bytes — it streams
+the original with `content-type: mimeType`, `404` if the row or the underlying file is
+gone (rows survive owner deactivation — no cascade).
+
+**Idempotency + file lifecycle**: file writes are async I/O, so they happen **outside**
+the transaction (`§4.1`). The route writes both files, then runs `withIdempotency`
+whose body hash binds the file's **sha256** — same key with different bytes →
+`409 idempotency_mismatch`. On replay or rollback the just-written files are removed;
+delete runs the tx first and removes the stored files only when not replayed.
 
 **Storage adapter**: `Bun.S3` when `S3_ENDPOINT`/`S3_ACCESS_KEY_ID`/
 `S3_SECRET_ACCESS_KEY`/`S3_BUCKET` are set (MinIO-compatible); local `STORAGE_DIR`
@@ -718,7 +733,8 @@ re-checked before any `bun add` re-resolution in §2 changes it.
 | Hono raw body response | `c.body(snapshot, 200, { "content-type": "application/json" })` | Used by `respondIdempotent` so a replayed response is byte-identical to the stored snapshot (§4.2). |
 | `Bun.WebView` construction | `new Bun.WebView({ backend: "chrome", headless: true })` | `chrome` backend required for CDP — WebKit has no CDP bridge. |
 | `Bun.WebView.cdp` | `await view.cdp("Page.printToPDF", { printBackground: true, format: "A4", preferCSSPageSize: true })` | Result returned **directly** — payload at `result.data`, not `{ data }`. |
-| `Bun.S3` | `new Bun.S3Client({ endpoint, accessKeyId, secretAccessKey, bucket })` then `.write(path, bytes)` / `.file(path)` | MinIO-compatible via `endpoint` — no separate MinIO SDK. |
-| `Bun.Image` thumbnail | `await new Bun.Image(bytes).resize({ width: 400 }).encode("webp")` | One thumbnail per media upload — no image-processing library dependency. |
+| `Bun.S3` | `new Bun.S3Client({ endpoint, accessKeyId, secretAccessKey, bucket })`; `await client.write(path, data, { type })`; `await client.delete(path)`; `client.file(path)` with `await file.exists()` / `await file.arrayBuffer()` | MinIO-compatible via `endpoint` — no separate MinIO SDK. `write` takes bytes + optional `type`; `file()` is lazy — use `exists()`/`arrayBuffer()`. |
+| `Bun.Image` thumbnail | `await new Bun.Image(bytes).resize(400, undefined, { fit: "inside", withoutEnlargement: true }).webp({ quality: 80 }).bytes()` | **Resolved 1.3.14 API** — decode is lazy; `resize(w, h?, opts)` not `resize({ width })`, encode is a method chain (`.webp(opts).bytes()`), not `.encode("webp")` (which does not exist on 1.3.x). `bytes()` returns a Promise. One thumbnail per media upload — no image-processing library dependency. |
+| `Bun.multipart` filename inference | `new Request(url, { method: "POST", body: formData })` then `await req.formData()` | Bun's multipart parser derives `File.type` from the **filename extension** and ignores the part's declared `Content-Type` (e.g. `x.jpg` with declared `image/png` parses as `image/jpeg`; `x.bin` with declared `image/png` parses as `application/octet-stream`). The media route's MIME gate therefore keys off the extension (`§4.10`). |
 
 Canonical doc URLs for anything not yet in this table: `AGENTS.md` §2.
