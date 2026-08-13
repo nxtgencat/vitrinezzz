@@ -8,7 +8,9 @@
     "typecheck": "bunx tsc --noEmit",
     "db:generate": "bunx drizzle-kit generate",
     "verify:db": "bun run scripts/verify-db.ts",
-    "ci": "bun run typecheck && bun run verify:db"
+    "verify:rbac": "bun run scripts/verify-rbac.ts",
+    "test:rbac": "bun test test/rbac.test.ts",
+    "ci": "bun run typecheck && bun run verify:db && bun run verify:rbac && bun run test:rbac"
   },
   "devDependencies": {
     "@types/bun": "latest",

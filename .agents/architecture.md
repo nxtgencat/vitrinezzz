@@ -493,7 +493,7 @@ unimplemented, nothing implemented undocumented.
 effective reach is the staff member's `staff_profiles.outletId`.
 
 **Enforcement point: the service layer, never the route.**
-`requireCapability(actor, cap, scopedOutlet?)` is asserted at the top of every gated
+`requireCapability(actor, cap, scopedOutletId?)` is asserted at the top of every gated
 service function — unbypassable from a direct call, a cron handler, or a future
 internal caller:
 
@@ -507,31 +507,58 @@ export function createProduct(tx: Tx, actor: StaffActor, input: CreateProductInp
 }
 ```
 
+**Outlet scope is strict and closed.** `scopedOutletId` declares which outlet the
+operation touches. An outlet-scoped role's effective reach is exactly one outlet —
+its holder's `staff_profiles.outletId` — so `scopedOutletId` must equal
+`actor.outletId`, and operations that declare no scope are denied to outlet-scoped
+actors entirely (`403 outside outlet scope`). Global roles (e.g. `Admin`) are
+unrestricted by outlet: their capability is global by definition. The check is:
+
+```ts
+if (!actor.capabilities.includes(cap)) throw 403 missing capability;
+if (actor.roleScope === "outlet" && scopedOutletId !== actor.outletId) throw 403 outside outlet scope;
+```
+
 Cron and webhook paths are the zero-capability case **by design**: cron only reads,
 verifies, or deletes expired rows; the webhook's only power is the payment-confirm
 routine it owns, gated first by signature verification — no staff actor exists in that
 request at all.
 
-**Guards**: `requireStaff` (session → `staff_profiles` row; missing/inactive → `403`,
-never `500` — an authenticated user without a staff profile is a normal state, a
-customer, not a server error), `requireCustomer` (auto-provisioned via the better-auth
-`databaseHooks.user.create.after` hook, so a profile always exists by the time any
-customer route runs).
+**Guards throw Hono `HTTPException`** (`hono/http-exception`); the error envelope
+(`lib/errors.ts`) arrives in phase 3, until then handlers surface `status` + `message`
+directly. `requireStaff` (no session → `401 unauthorized`; session but no/inactive
+`staff_profiles` row → `403 not a staff member`; missing role → `403 no role assigned`;
+outlet-scoped role whose `outletId` ≠ profile's → `403 role outlet mismatch` — always
+`403`, never `500`, an authenticated user without a staff profile is a normal state, a
+customer, not a server error), `requireCustomer` (no session → `401`; no/inactive
+`customers` row → `403 not a customer` — auto-provisioned via the better-auth
+`databaseHooks.user.create.after` hook, which runs **after** better-auth's sign-up
+transaction commits, so the profile always exists by the time any customer route runs
+and the hook may call `withTx` safely, §6).
 
-**Bootstrap admin**: created on first boot from `SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD`
-via `auth.api.signUpEmail` (`lib/auth.ts`, phase 2), seeded with an `Admin` role (all
-nine capabilities) if one doesn't exist, `staff_profiles.isProtected = true`.
-Delete/deactivate → `409 protected_resource`. Idempotent — runs every boot, acts once.
+**Bootstrap admin** (`lib/auth.ts`, idempotent — runs every boot, acts once):
+seeds the global `Admin` role (all nine capabilities) when one doesn't exist; seeds a
+default outlet named `"Main Outlet"` when none exists (the first boot always needs
+one); then creates the admin user from `SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD` via
+`auth.api.signUpEmail` with `staff_profiles.isProtected = true`.
+`SUPERUSER_*` set without `AUTH_SECRET` → boot throws. Bootstrap writes are audit-logged
+with `actorId: "system"`, `actorType: "system"`. Deactivate/delete of a protected
+profile → `409 protected_resource`; unknown profile id → `404 not_found` (deactivation
+contract in `services/staff.ts`).
 
-**Rate limiting**: in-memory fixed-window per IP — `/api/auth/*` 30/min,
-`/api/storefront/checkout` 5/min. Over → `429 RATE_LIMITED`. A single process means a
-single in-memory map is sufficient; no external cache needed.
+**Rate limiting**: better-auth's built-in fixed-window in-memory limiter, per IP —
+defaults: sign-up/sign-in/change-password/change-email `3` per `10s`, password-reset
+and email-verification paths `3` per `60s`, everything else `100`/`60s`. Over →
+`429`. A single process means a single in-memory map is sufficient; no external cache
+needed. Disabled under `NODE_ENV=test`/`TEST=true` (`rateLimit.customRules["*"] = false`)
+so verify scripts and test suites can burst sign-ups; production keeps defaults.
+Phase-10 specific limits (`/api/storefront/checkout` 5/min) land with their phases.
 
 ### 4.15 Conventions
 
 | Rule | Convention |
 |---|---|
-| Layout | Root-level dirs only — `lib/` (infrastructure: db, logger, idempotency, errors, money, doc-number, pdf, backup, auth), `db/schema/` (one Drizzle schema file per `schema.md` domain group §3–§13), `db/migrations/` (drizzle-kit SQL), `scripts/` (verify-*/smoke-*). No `src/` wrapper; docs that said `src/` were corrected in phase 1. |
+| Layout | Root-level dirs only — `lib/` (infrastructure: db, logger, idempotency, errors, money, doc-number, pdf, backup, auth), `db/schema/` (one Drizzle schema file per `schema.md` domain group §3–§13), `db/migrations/` (drizzle-kit SQL), `services/` (one module per domain service — `rbac.ts`, `staff.ts`, `audit.ts`, …; every gated service asserts `requireCapability` itself), `scripts/` (verify-*/smoke-*), `test/` (bun test scenario suites, one `test:<phase>` script per phase). No `src/` wrapper; docs that said `src/` were corrected in phase 1. |
 | Primary key | `id` TEXT = full `Bun.randomUUIDv7()`, never truncated (time-ordered; truncation collides within a time bucket). `settings` is the singleton exception, fixed id `'singleton'`. |
 | Human document numbers | `<PREFIX>-<7 base32 chars>` via `lib/doc-number.ts`, own UNIQUE column, never derived from `id`. Prefixes: `OR` orders, `INV` invoices, `BL` bills, `TR` transfers, `AJ` adjustments, `RT` returns, `SH` shipments, `PY` payments. |
 | Money | INTEGER paise; every money column ends in `Paise`. No REAL column anywhere. |
@@ -541,7 +568,7 @@ single in-memory map is sufficient; no external cache needed.
 | Booleans | INTEGER 0/1, `is…`/`has…`. |
 | Enums | TEXT + Zod union at the boundary. **Zero SQL CHECK constraints, ever.** |
 | FKs | `<entity>Id`. `ON DELETE RESTRICT` everywhere except the CASCADE list (`schema.md` §8). Nothing outside it is ever hard-deleted — references deactivate, documents void. |
-| Naming | Tables `snake_case` plural, columns `snake_case` — except the four better-auth tables, which keep better-auth's exact camelCase names, zero remapping, zero adapter-config risk. |
+| Naming | Tables `snake_case` plural, columns `snake_case` — except the four better-auth tables, which keep better-auth's exact camelCase names, zero remapping (the adapter is handed the schema object directly, `schema.md` §13). |
 | Column order | Fixed per table: `id` → business columns → status/version → timestamps. `verify-db` asserts it. |
 
 **Immutability triggers**: `BEFORE UPDATE`/`BEFORE DELETE` raising `ABORT` on every
@@ -645,9 +672,14 @@ re-checked before any `bun add` re-resolution in §2 changes it.
 | pino singleton | `import pino from "pino"`; `const logger = pino()` | Resolved 10.x is CJS (`export = pino`) — default import requires `esModuleInterop` (set in tsconfig, §2). `.child({ module })` per subsystem. |
 | Hono app export | `export type AppType = typeof app` | Consumed by `hc<AppType>()` on both frontends. |
 | `zValidator` error hook | `zValidator("json", schema, (result, c) => { if (!result.success) throw new HTTPException(400, { cause: result.error }); })` | Does **not** throw by default — the hook must throw explicitly, or invalid input silently 200s. Issues at `err.cause.issues`. |
-| better-auth adapter | `drizzleAdapter(db, { provider: "sqlite" })` | Owns `user`/`session`/`account`/`verification` with documented column names — no `schema:` remapping. |
-| better-auth session read | `auth.api.getSession({ headers })` | Server-side, inside route middleware. |
-| better-auth provisioning hook | `databaseHooks.user.create.after` | Fires after user creation; used to insert the linked `customers` row. |
+| better-auth adapter | `drizzleAdapter(db, { provider: "sqlite", transaction: true, schema: { user, session, account, verification } })` | Resolved 1.6.27 **requires the schema object** (`config.schema || db._.fullSchema`, else `BetterAuthError: model "user" was not found`). Schema keys are the model names; column names stay better-auth's camelCase — zero remapping. `transaction: true` wraps sign-up in a real transaction (the factory always provides a `transaction` method, falling back to `createAsIsTransaction`). **Pitfall:** the adapter declares neither `supportsDates` nor `supportsBooleans`, so raw `Date`/`boolean` values reach the driver — the auth tables' time/boolean INTEGERs must carry drizzle modes (`mode: "timestamp_ms"` / `mode: "boolean"`, `schema.md` §13), otherwise bun:sqlite throws `Binding expected …` on every user create. |
+| better-auth email/password | `emailAndPassword: { enabled: true }` | `enabled` defaults to **false** — sign-up/sign-in endpoints 404 without it. |
+| better-auth sign-up | `await auth.api.signUpEmail({ body: { name, email, password } })` → `{ token, user }` | No headers required; email normalized to lowercase, `emailVerified: false`; duplicate email → 422. |
+| better-auth session read | `await auth.api.getSession({ headers })` → `{ session, user } \| null` | `requireHeaders: true`; call from route middleware with the request headers. |
+| better-auth handler | `app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw))` | Returns a `Response`; mounted once in `index.ts`. |
+| better-auth provisioning hook | `databaseHooks.user.create.after: async (createdUser) => …` | Fires **after** the sign-up transaction commits (`queueAfterTransactionHook`) — calling `withTx` inside the hook is safe, no nesting. Used to insert the linked `customers` row. |
+| better-auth rate limit | `rateLimit: { customRules: { "*": false } }` | Disables the built-in limiter entirely; applied only under `NODE_ENV=test`/`TEST=true` (`§4.14`). Defaults otherwise: sign-up/sign-in `3`/`10s` per IP, in-memory. |
+| Hono guards | `throw new HTTPException(status, { message })` from `hono/http-exception` | Status + message; error envelope lands in phase 3. |
 | Zod v4 enums | `z.enum([...])` | `z.nativeEnum` doesn't exist in v4; issues at `error.issues`. |
 | `Bun.cron` | `Bun.cron(pattern, handler)` | Function-pair signature — not `.schedule({...})`, which doesn't exist. |
 | `Bun.WebView` construction | `new Bun.WebView({ backend: "chrome", headless: true })` | `chrome` backend required for CDP — WebKit has no CDP bridge. |

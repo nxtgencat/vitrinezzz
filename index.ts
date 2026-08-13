@@ -2,10 +2,14 @@ import { Hono } from "hono";
 import { db } from "./lib/db";
 import { logger } from "./lib/logger";
 import { applyMigrations } from "./lib/migrate";
+import { auth, bootstrapAdmin } from "./lib/auth";
 
 applyMigrations(db);
+await bootstrapAdmin();
 
 export const app = new Hono();
+
+app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 
 app.get("/api/health", (c) => {
   const start = performance.now();

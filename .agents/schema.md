@@ -15,7 +15,7 @@ quantities INTEGER · timestamps INTEGER unix-ms UTC · booleans INTEGER `is…`
 enums TEXT + Zod union, **zero CHECK constraints** · FKs `<entity>Id`,
 `ON DELETE RESTRICT` except the CASCADE list (§8) · tables `snake_case` plural,
 columns `snake_case` except the four better-auth tables (exact camelCase, no
-remapping).
+remapping; their INTEGER time/boolean columns carry drizzle modes — see §13).
 
 **Table kinds**: `[REF]` reference/master data · `[DOC]` document header · `[CHILD]`
 document line, CASCADE child · `[FACT]` append-only event record, trigger-protected ·
@@ -293,7 +293,12 @@ work), `createdAt`, `expiresAt` (reaped 24h after `createdAt`). PK `id`; UNIQUE
 Owned by better-auth, defined in `db/schema/auth.ts` purely so `drizzle-kit` can
 manage their migrations alongside everything else. Column names are better-auth's
 exact documented names (camelCase), zero remapping. All ids TEXT; timestamps INTEGER
-ms; `emailVerified` INTEGER boolean.
+ms; `emailVerified` INTEGER boolean. **Column modes** (phase 2, `architecture.md` §6):
+the resolved drizzle adapter does not convert `Date`/`boolean` for sqlite, so the
+auth tables' time columns are declared `integer(name, { mode: "timestamp_ms" })` and
+`emailVerified` is `integer(name, { mode: "boolean" })` — the SQL storage is unchanged
+(INTEGER ms / 0-1); the modes make drizzle bind/convert better-auth's values.
+`db:generate` reports no schema drift for this (modes are compile-time only).
 
 - **user** — `id` PK, `name` NOT NULL, `email` NOT NULL UNIQUE, `emailVerified` NOT
   NULL, `image?`, `createdAt`, `updatedAt`.
