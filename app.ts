@@ -7,6 +7,8 @@ import { catalogRoutes } from "./routes/catalog";
 import { inventoryRoutes } from "./routes/inventory";
 import { paymentsRoutes } from "./routes/payments";
 import { purchasingRoutes } from "./routes/purchasing";
+import { salesRoutes } from "./routes/sales";
+import { storefrontRoutes } from "./routes/storefront";
 
 /**
  * The assembled Hono app — every route, hook, and middleware. `index.ts`
@@ -41,5 +43,7 @@ app.route("/api", catalogRoutes);
 app.route("/api", inventoryRoutes);
 app.route("/api", purchasingRoutes);
 app.route("/api", paymentsRoutes);
+app.route("/api", salesRoutes);
+app.route("/api", storefrontRoutes);
 
 export type AppType = typeof app;

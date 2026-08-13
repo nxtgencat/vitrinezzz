@@ -115,16 +115,16 @@ with an auto-seeded `Admin` role (all 9 capabilities); `isProtected = true`.
 
 | Method | Path | Guard | Idem | Notes |
 |---|---|---|---|---|
-| GET/POST | `/api/orders[/:id]` | R(canManageSales) | I on POST | `orderType` = `pos`\|`manual`. |
+| GET/POST | `/api/orders[/:id]` | R(canManageSales) | I on POST | **Header-only**: `POST { orderType, customerId?, outletId }` — sale lines live on the linked draft invoice, never on the order row. |
 | PUT | `/api/orders/:id` | R(canManageSales) | I | Draft only. |
-| POST | `/api/orders/:id/confirm` ‡ | R(canManageSales) | I | `draft → confirmed`; creates the draft invoice. Plays no stock. |
-| POST | `/api/orders/:id/cancel` ‡ | R(canManageSales) | I | |
-| GET | `/api/invoices[/:id]` | S | – | Detail includes computed outstanding balance. |
-| PUT | `/api/invoices/:id` | S | I | Draft only; versioned. |
+| POST | `/api/orders/:id/confirm` ‡ | R(canManageSales) | I | `draft → confirmed`; creates the **empty** draft invoice. Plays no stock. |
+| POST | `/api/orders/:id/cancel` ‡ | R(canManageSales) | I | `draft\|pending → cancelled`; voids the linked draft invoice. |
+| GET | `/api/invoices[/:id]` | S | – | Detail includes computed outstanding balance (`totalPaise` − Σ in + Σ out over linked payments). |
+| PUT | `/api/invoices/:id` | S | I | Draft only; versioned. Full-replace body: `{ items, charges?, version }` — regular lines `{ variantId, quantity }` are **re-priced server-side** (price/tax from the variant; a client-sent price on a regular line → 400), custom lines `{ isCustomItem: true, name, quantity, unitPricePaise }` keep the client price at `taxRatePct = 0`; duplicate regular `variantId` → 400. |
 | POST | `/api/invoices/:id/issue` ‡ | R(canManageSales) | I | **The shared `issueInvoice` core** — recomputes totals from snapshots + charges, allocates batches FIFO, writes `sale` movements per line/batch, snapshots totals, marks `issued`. Re-issue → `409 already_issued`, zero rows; insufficient stock → `409`, whole document rolls back. |
 | POST | `/api/invoices/:id/void` | R(canManageSales) | I | Draft only. |
 | POST | `/api/invoices/:id/render-pdf` | R(canManageSales) | – | Body `{ html }` (≤256KB) — client-built markup, server only prints (`architecture.md` §4.9). Non-fatal: failure → warning + null `pdfPath`, invoice stands. |
-| POST | `/api/sales/pos/checkout` ‡ | R(canManageSales) | I | POS one-step sale: create + issue immediately in one transaction, via the same `issueInvoice` core. |
+| POST | `/api/sales/pos/checkout` ‡ | R(canManageSales) | I | POS one-step sale: create + issue immediately in one transaction, via the same `issueInvoice` core. Body `{ outletId, customerId?, items, charges? }`. |
 
 ## 7. Payments
 
@@ -151,17 +151,17 @@ with an auto-seeded `Admin` role (all 9 capabilities); `isProtected = true`.
 
 | Method | Path | Guard | Idem | Notes |
 |---|---|---|---|---|
-| GET | `/api/storefront/products` | * | – | `isCustomerVisible` variants only; stock exposed only as `isInStock` — **never quantity**. |
-| GET | `/api/storefront/products/:slug` | * | – | Product detail. |
+| GET | `/api/storefront/products` | * | – | `isCustomerVisible` variants only; stock exposed only as `isInStock` — **never quantity**. Products with no visible variant are excluded entirely. |
+| GET | `/api/storefront/products/:slug` | * | – | Product detail; 404 when the product has no visible variant. |
 | GET | `/api/storefront/cart` | C | – | Current cart, cross-device (keyed by `customerId`). |
 | PUT | `/api/storefront/cart` | C | I | Upsert `{ variantId, quantity }`. |
 | DELETE | `/api/storefront/cart/:variantId` | C | I | |
 | GET/POST/DELETE | `/api/storefront/wishlist[/:variantId]` | C | I on POST/DELETE | |
 | GET/POST | `/api/storefront/addresses[/:id]` | C | I on POST | Own rows only. |
-| POST | `/api/storefront/checkout` ‡ | C | I (rate-limited 5/min) | Body `{ custAddressId, paymentMode }` **only — no prices, no cart snapshot**. Re-reads the cart, re-prices every line from `variants`, re-derives stock in-tx (`architecture.md` §4.11). `cod` issues the invoice immediately; `gateway` defers to the webhook after a stock pre-gate. On any gate failure, the whole transaction rolls back and the cart is untouched. |
+| POST | `/api/storefront/checkout` ‡ | C | I (rate-limited 5/min) | Body `{ custAddressId, paymentMode }` **only — no prices, no cart snapshot**. Re-reads the cart, re-prices every line from `variants`, re-derives stock in-tx (`architecture.md` §4.11). `cod` confirms + issues immediately and clears the cart; `gateway` pre-gates stock but allocates nothing — order stays `pending`, invoice stays `draft`, a `pending` payment row is inserted and its `gatewayPaymentId` is returned as `checkoutReference`; the cart is kept until the phase-8 webhook confirms. On any gate failure, the whole transaction rolls back and the cart is untouched. Storefront outlet = `settings.defaultOutletId` else first active outlet; none → 500 `no outlet configured`. |
 | GET | `/api/storefront/orders[/:id]` | C | – | Own orders only (404 on others'); detail includes `order_events` timeline. |
-| POST | `/api/storefront/orders/:id/cancel` ‡ | C | I | `pending` only. |
-| POST | `/api/storefront/returns` | C | I | Draft sales return on own issued invoice; confirmation is staff-side (§8). |
+| POST | `/api/storefront/orders/:id/cancel` ‡ | C | I | `pending` only; voids the linked draft invoice. |
+| POST | `/api/storefront/returns` | C | I | Draft sales return on the customer's own order whose invoice is `issued` (order must be `confirmed`, else `409 invalid_transition`; invoice not `issued` → 404). Lines `{ originalItemId, quantity }` must reference the invoice's own line (404 otherwise), `quantity` ≤ original (400), custom-line returns rejected (400). Caps enforced at staff-side confirm (§8). |
 
 The client never treats a gateway redirect as success — it polls/subscribes to
 `order:{id}` until status leaves `awaiting_payment`.

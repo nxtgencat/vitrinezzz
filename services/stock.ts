@@ -1,5 +1,5 @@
 import { randomUUIDv7 } from "bun";
-import { and, asc, count, desc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import { batches, variants } from "../db/schema/catalog";
 import { stockLevels, stockMovements } from "../db/schema/inventory";
@@ -108,6 +108,35 @@ export function sumStock(tx: Tx, variantId: string, outletId: string): number {
     .where(and(eq(stockMovements.variantId, variantId), eq(stockMovements.outletId, outletId)))
     .get();
   return row?.total ?? 0;
+}
+
+/**
+ * Decision read — per-batch holdings of a variant at an outlet, re-derived
+ * from the fact table in-transaction (never the projection cache, §4.6):
+ * `SUM(stock_movements.delta)` grouped by batch, joined with the batches'
+ * expiry dates so the FIFO allocator (`allocateBatches`) can sort by
+ * `(expiryDate ASC, nulls last)`. This is the input to every sale allocation
+ * (phase 7's `issueInvoice` core).
+ */
+export function batchHoldings(tx: Tx, variantId: string, outletId: string): AllocatableBatch[] {
+  const sums = tx
+    .select({
+      batchId: stockMovements.batchId,
+      quantity: sql<number>`coalesce(sum(${stockMovements.delta}), 0)`,
+    })
+    .from(stockMovements)
+    .where(and(eq(stockMovements.variantId, variantId), eq(stockMovements.outletId, outletId)))
+    .groupBy(stockMovements.batchId)
+    .all();
+  if (sums.length === 0) return [];
+  const batchIds = sums.map((s) => s.batchId);
+  const batchRows = tx
+    .select({ id: batches.id, expiryDate: batches.expiryDate })
+    .from(batches)
+    .where(inArray(batches.id, batchIds))
+    .all();
+  const expiryOf = new Map(batchRows.map((b) => [b.id, b.expiryDate]));
+  return sums.map((s) => ({ batchId: s.batchId, quantity: s.quantity, expiryDate: expiryOf.get(s.batchId) ?? null }));
 }
 
 export type AllocatableBatch = { batchId: string; quantity: number; expiryDate: number | null };

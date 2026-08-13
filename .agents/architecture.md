@@ -307,10 +307,13 @@ trigger transitions defined here; services reject everything else with
 never edits: an issued document is never edited and never returns to draft. `void`
 exists **only** on drafts.
 
-- **Order** — `draft | pending | confirmed | cancelled`. Staff (POS/manual):
-  `draft → confirmed` (creates the draft invoice). Storefront: `pending → confirmed` /
-  `pending → cancelled`; `pending` means payment outstanding. Confirmation plays no
-  stock — stock moves at invoice issue.
+- **Order** — `draft | pending | confirmed | cancelled`. Orders are **header-only**:
+  sale lines live on the linked draft invoice, never on the order row. Staff
+  (POS/manual): `draft → confirmed` (creates the empty draft invoice; lines then
+  enter via `PUT /api/invoices/:id`). Storefront COD: `pending → confirmed` + invoice
+  issue in the same transaction. Storefront gateway: `pending → cancelled` (customer)
+  — `pending` means payment outstanding; cancelling voids the linked draft invoice.
+  Confirmation plays no stock — stock moves at invoice issue.
 - **Invoice** — `draft | issued | void (draft only)`. `draft → issue` recomputes money
   from snapshots, allocates and decrements stock, writes `stock_movements` per
   line/batch, snapshots totals, marks `issued` — one transaction, one-shot (re-issue →
@@ -339,7 +342,10 @@ exists **only** on drafts.
   quantities. Carrier/AWB editable (versioned) while `created`. One invoice may have
   many shipments; shipment status never changes invoice/order state.
 - **Payment** — `pending (gateway only) | confirmed`. Facts: never updated, never
-  deleted, never flipped back. Reversals are opposite-direction rows.
+  deleted, never flipped back. Reversals are opposite-direction rows. The `pending`
+  row written at gateway checkout stays `pending` forever (insert-only by trigger);
+  the phase-8 webhook inserts a separate `confirmed` row carrying `gateway` +
+  `gatewayEventId`, deduped on `UNIQUE(gateway, gatewayEventId)`.
 - **Media asset** — no lifecycle beyond upload/delete; delete is a hard delete (not a
   document, not trigger-protected) but writes an `audit_events` row.
 - **Cart/wishlist line** — no lifecycle; upserted/deleted freely, zero events.
@@ -450,6 +456,20 @@ realtime publish** — adding, changing, or removing a line is plain CRUD.
    clears the cart — all in one transaction.
 5. On any gate failure: the whole transaction rolls back, the cart is **untouched**, and
    the response carries the specific `reason` so the client can show which line failed.
+
+**Outlet resolution.** The storefront operates on one outlet:
+`settings.defaultOutletId` when set, else the first active outlet (deterministic:
+`createdAt`, then `id`). No outlet at all → 500 `no outlet configured` — a
+boot/config defect, not a 404.
+
+**Gateway mode.** `paymentMode = 'gateway'` pre-gates every line (`sumStock ≥ qty`)
+but allocates nothing: the order stays `pending`, the invoice stays `draft`, and a
+`pending` `payments` row is inserted (`mode=gateway`, `gatewayPaymentId` =
+server-generated checkout reference returned to the client as `checkoutReference`).
+The cart is **kept** — it is cleared only when the phase-8 payment-confirming
+webhook runs the confirm+issue path. A `pending` row is never updated (payments is
+insert-only, §4.7); the webhook's `confirmed` row is a new insert, deduped on
+`UNIQUE(gateway, gatewayEventId)`.
 
 No abandoned-cart cleanup exists — out of scope by `task.md` §4.
 

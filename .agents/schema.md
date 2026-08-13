@@ -332,7 +332,12 @@ mapping).
 1. `returns`: exactly one of `orderId` / `purchaseBillId`, matching `returnType`
    (`sales` → order; `purchase` → bill).
 2. `payments`: exactly one of `invoiceId` / `purchaseBillId` / `returnId`, matching
-   `(direction, partyType)`; `mode = 'gateway'` requires `gateway` + `gatewayEventId`.
+   `(direction, partyType)`. `mode = 'gateway'` requires `gateway` + `gatewayEventId`
+   on the webhook-confirmed row; the pending checkout row (phase 7) carries only
+   `gatewayPaymentId` — the server-generated checkout reference — with `gateway` /
+   `gatewayEventId` NULL until the webhook confirms. A pending row is **never**
+   updated (payments is insert-only): the phase-8 webhook inserts a separate
+   `confirmed` row, deduped on `UNIQUE(gateway, gatewayEventId)`.
 3. `stock_movements`: `(sourceType, sourceId)` must be a valid pair for `reason`
    (`sale`→invoice id, `purchase`→bill id, `transfer_in/out`→transfer id,
    `adjustment_in/out`→adjustment id, `return_in`→sales return id,
