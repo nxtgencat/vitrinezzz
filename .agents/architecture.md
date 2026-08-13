@@ -178,11 +178,23 @@ catch — a failed reap is logged, never fatal).
 `POST /api/webhooks/payments/:gateway` is protected instead by:
 
 1. **HMAC-SHA256 signature verification over the raw request body, before any database
-   access.** Failure → `401`, zero DB reads or writes.
+   access.** Failure → `401`, zero DB reads or writes. The secret is
+   `WEBHOOK_SECRET_<GATEWAY>` where `<GATEWAY>` is the path param uppercased
+   (`lib/webhook.ts`: `webhookSecretFor` reads it at call time; a missing variable
+   denies). The signature is `hex(HMAC-SHA256(raw body, secret))` computed with
+   `Bun.CryptoHasher("sha256", secret)` (HMAC mode — the secret is the key), compared
+   to the `X-Webhook-Signature` header with `crypto.timingSafeEqual` over
+   equal-length hex buffers (length mismatch short-circuits to denial). **The money
+   amount is never trusted from the payload** — the webhook body is strict
+   `{ event: "payment.confirmed", gatewayPaymentId, gatewayEventId }` and the amount
+   is derived from the pending checkout row the payment settles (never client-originable,
+   §4.4). Unknown `gatewayPaymentId` → 404.
 2. **Provider-event dedupe** via partial-unique `payments(gateway, gatewayEventId)`. The
    transaction inserts the payment row; a replayed or racing duplicate hits the
-   constraint, the handler catches it, responds `200` with zero further side effects —
-   the gateway stops retrying, nothing double-applies.
+   constraint, the handler catches it (pre-checked first for the common case; the
+   `SQLiteError` `UNIQUE` catch on `payments.gateway` is the race-proof backstop),
+   responds `200 { status: "replayed" }` with zero further side effects — the gateway
+   stops retrying, nothing double-applies.
 
 ### 4.3 Named races and their proof
 
@@ -230,19 +242,26 @@ server-computed or server-owned:
 | Custom line `name`, `quantity`, `unitPricePaise` (+`isCustomItem`) | `invoice_items` | Staff-only; negative price rejected. |
 | Charge `name` + signed `amountPaise` | `invoice_charges`, `bill_charges` | `total ≥ 0` enforced at issue. |
 | Sale quantities + ids | order/invoice lines | `quantity ≥ 1`; stock gate in-tx. |
-| Payment `amountPaise` + `mode` (+gateway refs) | `payments` | ≤ outstanding balance, recomputed in-tx (R3). |
+| Payment `amountPaise` + `mode` (+gateway refs) | `payments` | ≤ cap, recomputed in-tx (R3); `mode` `gateway` is server-only — webhook amounts are derived from the pending row, never the payload |
 | Bill line `unitCostPaise`, `taxRatePct`, `batchNumber?` | `purchase_bill_items` | The vendor's invoice is the world; integer percent validated. |
 | Return line `quantity` | `return_items` | ≤ returnable per original line, computed in-tx (R4), never stored. |
 | Transfer/adjustment line `quantity` + `batchId` | `stock_transfer_items`, `adjustment_items` | ≤ source stock at the batch, in-tx. |
 | Catalog master data (prices, tax rates, names, slugs, batch cost) | reference tables | Client-editable by design — current truth for *future* lines only; never rewrites history. |
 | Cart/wishlist `quantity` | `cart_items` | Never trusted at checkout — re-priced and re-gated from scratch (§4.11). |
 
-**Caps, stated once:** invoice outstanding balance = `Σ payments(direction='in')` −
-`Σ payments(direction='out')` over rows linked to it (refunds count as `out`). Bill
-balance owed to a vendor = `bill.total − Σ payments(direction='out', link=bill)`.
-Refund cap = `min(paid balance of the document, value of the return lines)`. Returnable
-quantity per original line = `original quantity − Σ confirmed return lines referencing
-it`. All recomputed in-tx, never cached.
+**Caps, stated once.** All balances sum `payments` rows with `status = 'confirmed'`
+**only** — a checkout's `pending` placeholder is insert-only (never deleted, §4.7) and
+has moved zero money; counting it would poison every cap it touches. Invoice
+outstanding = `Σ(direction='in')` − `Σ(direction='out')` over rows carrying the
+invoice's id, where return-linked refunds are included inside those sums with the
+document's own id stamped by the service — two refund paths can never jointly exceed
+what was paid, because both draw on the same `out` sum. Bill balance owed to a vendor
+= `bill.total − Σ payments(direction='out', link=bill)`. Refund caps = `min(paid
+balance of the document, remaining return value of the document's confirmed lines)`
+(per-return value re-snapshot at confirm, R4). Returnable quantity per original line =
+`original quantity − Σ confirmed return lines referencing it`. Every cap violation is
+`409 over_payment` (the payment mechanism has one reason; `over_return` is the
+quantity-cap reason at return confirm). All recomputed in-tx, never cached.
 
 ### 4.5 Data modeling: what is snapshotted, what is recomputed
 
@@ -345,7 +364,11 @@ exists **only** on drafts.
   deleted, never flipped back. Reversals are opposite-direction rows. The `pending`
   row written at gateway checkout stays `pending` forever (insert-only by trigger);
   the phase-8 webhook inserts a separate `confirmed` row carrying `gateway` +
-  `gatewayEventId`, deduped on `UNIQUE(gateway, gatewayEventId)`.
+  `gatewayEventId`, deduped on `UNIQUE(gateway, gatewayEventId)`. A webhook arriving
+  after the customer cancelled the pending order still records the payment fact
+  (`confirmed` row) and immediately compensates: a full auto-refund `out` row +
+  `payment.confirmed` + `payment.refunded` events — the money is never lost and never
+  double-paid.
 - **Media asset** — no lifecycle beyond upload/delete; delete is a hard delete (not a
   document, not trigger-protected) but writes an `audit_events` row.
 - **Cart/wishlist line** — no lifecycle; upserted/deleted freely, zero events.
@@ -357,7 +380,10 @@ at checkout (fail fast if already short); webhook success → payment `confirmed
 confirm + invoice issue (the final gate re-runs in-tx; if stock is short despite the
 pre-gate, the order auto-cancels and the payment auto-refunds with an `out` row — an
 explicit, tested compensation path, not a silent failure, recorded in `order_events`).
-Webhook failure/timeout leaves the order `pending` and customer-cancellable.
+Webhook failure/timeout leaves the order `pending` and customer-cancellable; a
+webhook that then arrives for the cancelled order records the payment and
+auto-refunds it in full (payment workflow above). Cart clearing happens only on a
+`confirmed` (or `refunded`) outcome — a `replayed` webhook changes nothing.
 
 ### 4.8 Realtime
 

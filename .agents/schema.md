@@ -186,8 +186,9 @@ create-or-reuse at issue), `quantity`, `unitCostPaise`, `taxRatePct`,
 `id`, `returnId`, `variantId`, `originalItemId` (polymorphic:
 `invoice_items.id` for sales, `purchase_bill_items.id` for purchase, discriminated by
 the header's `returnType`), `quantity`, `unitPricePaise`, `taxAmountPaise` (both
-copied from the original line at confirm). PK `id`; idx `(returnId)`. `quantity` ≤
-returnable, computed in-tx, never stored.
+snapshotted at confirm from the original line — the tax pro-rated by quantity, since
+the original line's `taxAmountPaise` is whole-line). PK `id`; idx `(returnId)`.
+`quantity` ≤ returnable, computed in-tx, never stored.
 
 ### 6.7 shipments `[DOC]`
 `id`, `shipmentNumber`, `invoiceId`, `carrier`, `awbNumber?`, `status`
@@ -211,9 +212,14 @@ invoice may have many shipments.
 One table, `direction` column, covers money received, money paid out, and refunds in
 both directions — a refund against an invoice is an `out` row against that invoice; a
 refund a vendor owes back is an `in` row against that bill. Balance for any document is
-`Σ in − Σ out` over its linked rows, one query, no join. Exactly one of `invoiceId` /
-`purchaseBillId` / `returnId` set per row, matching context (XOR rule, §7). The
-webhook dedupe key is `UNIQUE(gateway, gatewayEventId)`.
+`Σ in − Σ out` over its linked rows, one query, no join — summing `status='confirmed'`
+rows only, since a checkout's `pending` placeholder is insert-only and never settles.
+A return-linked refund row carries only `returnId` on insert; the service stamps the
+derived `invoiceId`/`purchaseBillId` on the same row so return refunds sit inside the
+document's direction sums (the two refund paths can never jointly exceed what was
+paid). Exactly one of `invoiceId` / `purchaseBillId` / `returnId` set per row,
+matching context (XOR rule, §7). The webhook dedupe key is
+`UNIQUE(gateway, gatewayEventId)`.
 
 ---
 

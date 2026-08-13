@@ -4,11 +4,14 @@ import { logger } from "./lib/logger";
 import { auth } from "./lib/auth";
 import { handleError, notFoundHandler } from "./lib/errors";
 import { catalogRoutes } from "./routes/catalog";
+import { fulfillmentRoutes } from "./routes/fulfillment";
 import { inventoryRoutes } from "./routes/inventory";
 import { paymentsRoutes } from "./routes/payments";
 import { purchasingRoutes } from "./routes/purchasing";
+import { returnsRoutes } from "./routes/returns";
 import { salesRoutes } from "./routes/sales";
 import { storefrontRoutes } from "./routes/storefront";
+import { webhookRoutes } from "./routes/webhooks";
 
 /**
  * The assembled Hono app — every route, hook, and middleware. `index.ts`
@@ -45,5 +48,8 @@ app.route("/api", purchasingRoutes);
 app.route("/api", paymentsRoutes);
 app.route("/api", salesRoutes);
 app.route("/api", storefrontRoutes);
+app.route("/api", webhookRoutes);
+app.route("/api", returnsRoutes);
+app.route("/api", fulfillmentRoutes);
 
 export type AppType = typeof app;

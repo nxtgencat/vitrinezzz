@@ -20,11 +20,16 @@
     "smoke:purchasing": "bun run scripts/smoke-purchasing.ts",
     "smoke:sales": "bun run scripts/smoke-sales.ts",
     "smoke:storefront": "bun run scripts/smoke-storefront.ts",
+    "smoke:payments": "bun run scripts/smoke-payments.ts",
+    "smoke:returns": "bun run scripts/smoke-returns.ts",
+    "smoke:fulfillment": "bun run scripts/smoke-fulfillment.ts",
     "test:rbac": "bun test test/rbac.test.ts",
     "test:core": "bun test test/core.test.ts",
     "test:stock": "bun test test/stock.test.ts",
     "test:sales": "bun test test/sales.test.ts",
-    "ci": "bun run typecheck && bun run verify:db && bun run verify:rbac && bun run test:rbac && bun run verify:immutability && bun run verify:hygiene && bun run verify:deps && bun run verify:stock && bun run verify:audit && bun run smoke:catalog && bun run smoke:media && bun run smoke:inventory && bun run smoke:purchasing && bun run smoke:sales && bun run smoke:storefront && bun run test:core && bun run test:stock && bun run test:sales"
+    "test:payments": "bun test test/payments.test.ts",
+    "test:returns": "bun test test/returns.test.ts",
+    "ci": "bun run typecheck && bun run verify:db && bun run verify:rbac && bun run test:rbac && bun run verify:immutability && bun run verify:hygiene && bun run verify:deps && bun run verify:stock && bun run verify:audit && bun run smoke:catalog && bun run smoke:media && bun run smoke:inventory && bun run smoke:purchasing && bun run smoke:sales && bun run smoke:storefront && bun run smoke:payments && bun run smoke:returns && bun run smoke:fulfillment && bun run test:core && bun run test:stock && bun run test:sales && bun run test:payments && bun run test:returns"
   },
   "devDependencies": {
     "@types/bun": "latest",

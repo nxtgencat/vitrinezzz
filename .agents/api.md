@@ -131,21 +131,21 @@ with an auto-seeded `Admin` role (all 9 capabilities); `isProtected = true`.
 | Method | Path | Guard | Idem | Notes |
 |---|---|---|---|---|
 | GET | `/api/payments` | R(canManagePayments) | – | Filters `direction`, `partyType`/`partyId`, date range. |
-| POST | `/api/payments` | R(canManagePayments) | I | `{ direction, partyType, partyId, invoiceId? \| purchaseBillId? \| returnId?, amountPaise, mode, outletId }`. Exactly one document link (XOR). Received/made capped at outstanding balance (`409 over_payment`); refund capped at paid balance (`409 over_return` scope reused where applicable). The linked document must be `issued`/confirmed (else `409 invalid_transition`), and `partyId` must be the document's own party. |
-| POST | `/api/webhooks/payments/:gateway` | * (signature-verified) | – | No idempotency header — see `architecture.md` §4.2. HMAC verified before any DB access; dedupe on `payments UNIQUE(gateway, gatewayEventId)`; replay → `200`, zero side effects. Success path: mark payment `confirmed` → run the pending order's confirm+issue path (final stock gate re-runs; short stock triggers the auto-cancel+refund compensation, `architecture.md` §4.7). |
+| POST | `/api/payments` | R(canManagePayments) | I | `{ direction, partyType, partyId, invoiceId? \| purchaseBillId? \| returnId?, amountPaise, mode, outletId }` with **exactly one** document link (XOR, else 400), `mode` ∈ cash\|upi\|card\|bank (`gateway` → 400 — it only arrives via the webhook). Six contexts, one shape: `in`+customer+invoice (cap = invoice outstanding), `out`+customer+invoice (cap = invoice paid balance), `out`+vendor+bill (cap = bill outstanding), `in`+vendor+bill (cap = bill paid balance), `out`+customer+returnId (sales-return refund; cap = min(invoice paid balance, remaining return value)), `in`+vendor+returnId (purchase-return refund; cap = min(bill paid balance, remaining return value)). **Every cap violation is `409 over_payment`** — one reason per mechanism (`over_return` is reserved for return-document quantity caps at confirm). Balances are re-derived in-tx from confirmed rows only (a pending gateway placeholder has moved zero money) and include return-linked refunds inside the direction sums — two refund paths can never jointly exceed what was paid. The document must be `issued`/confirmed (else `409 invalid_transition`), `partyId` must be the document's own party (404/400), and the payment's outlet is the document's outlet (`outletId` mismatch → 400). Return-linked rows have the document's own invoice/bill id stamped by the service. |
+| POST | `/api/webhooks/payments/:gateway` | * (signature-verified) | – | No idempotency header, no staff session (`architecture.md` §4.2). Body `{ event: "payment.confirmed", gatewayPaymentId, gatewayEventId }` (strict — **no money field**; the amount is derived server-side from the pending checkout row). Header `X-Webhook-Signature` = lowercase hex HMAC-SHA256 over the raw body with `WEBHOOK_SECRET_<GATEWAY>` (path param, uppercased). Order of checks: unknown gateway → `401 gateway_unknown`; missing/bad signature → `401 bad_signature` (both zero DB access); unparseable JSON → 400; unknown `gatewayPaymentId` → 404. Dedupe on `payments UNIQUE(gateway, gatewayEventId)` (R7): replay or race → `200 { status: "replayed" }` with zero side effects. Otherwise: insert the confirmed row → `payment.confirmed` event → pending order's confirm+issue path (final stock gate re-runs in-tx) → `200 { status: "confirmed" }`, cart cleared. A webhook arriving for an already-cancelled order inserts the confirmed row plus a full auto-refund `out` row (`payment.confirmed` + `payment.refunded` events) → `200 { status: "refunded" }` — the payment fact is never lost. A late stock shortfall auto-cancels the order, voids the invoice, and auto-refunds the same way (`architecture.md` §4.7). |
 
 ## 8. Returns & fulfillment
 
 | Method | Path | Guard | Idem | Notes |
 |---|---|---|---|---|
-| GET/POST | `/api/returns[/:id]` | R(canManageReturns) | I on POST | `returnType` = `sales`\|`purchase`; exactly one of `orderId`/`purchaseBillId` (XOR). |
-| PUT | `/api/returns/:id` | R(canManageReturns) | I | Draft only. |
-| POST | `/api/returns/:id/confirm` ‡ | R(canManageReturns) | I | Caps recomputed in-tx (`409 over_return`); sales restock mirrors the original allocations, purchase de-stocks the bill's batch; values snapshotted from the original line. |
-| POST | `/api/returns/:id/void` | R(canManageReturns) | I | Draft only. |
-| GET/POST | `/api/shipments[/:id]` | R(canManageFulfillment) | I on POST | Whole-invoice, no line quantities. |
-| PUT | `/api/shipments/:id` | R(canManageFulfillment) | I | Carrier/AWB, while `created` only; versioned. |
-| POST | `/api/shipments/:id/dispatch` ‡ | R(canManageFulfillment) | I | |
-| POST | `/api/shipments/:id/deliver` ‡ | R(canManageFulfillment) | I | |
+| GET/POST | `/api/returns[/:id]` | R(canManageReturns) | I on POST | `returnType` = `sales`\|`purchase`; exactly one of `orderId`/`purchaseBillId` (XOR, else 400). Lines `{ originalItemId, quantity }`: must reference the document's own line (404), `quantity` in 1..original (400), no duplicates (400), sales may not return custom lines (400). Outlet = the document's own. Draft plays no stock and writes no events (I11). |
+| PUT | `/api/returns/:id` | R(canManageReturns) | I | Draft only (`409 invalid_transition`), versioned full-replace (`409 stale_version`), re-validated against the original document. |
+| POST | `/api/returns/:id/confirm` ‡ | R(canManageReturns) | I | Draft only. Per-line returnable = `original.qty − Σ confirmed return lines of the same document` re-derived in-tx → `409 over_return`, whole document rolls back, zero movements. Sales restock mirrors the original allocations batch-for-batch (`return_in`); purchase de-stocks the bill's batch (`return_out`), gated in-tx on available stock → `409 insufficient_stock`. Unit price + tax re-snapshotted from the original line (tax pro-rated by quantity); sales writes its `return.confirmed` order event. |
+| POST | `/api/returns/:id/void` | R(canManageReturns) | I | Draft only — a draft has no movements, so voiding never touches stock. |
+| GET/POST | `/api/shipments[/:id]` | R(canManageFulfillment) | I on POST | Whole-invoice, no line quantities; invoice must be `issued` (else `409 invalid_transition`), scope = the invoice's outlet, one invoice may have many shipments. `SH-` numbers. |
+| PUT | `/api/shipments/:id` | R(canManageFulfillment) | I | Carrier/AWB, while `created` only (`409 invalid_transition`); versioned (`409 stale_version`). |
+| POST | `/api/shipments/:id/dispatch` ‡ | R(canManageFulfillment) | I | `created → dispatched`; writes `shipment.dispatched` on the invoice's order. |
+| POST | `/api/shipments/:id/deliver` ‡ | R(canManageFulfillment) | I | `dispatched → delivered`; writes `shipment.delivered`. Shipment state never changes invoice/order state. |
 
 ## 9. Storefront (customer-facing)
 
@@ -178,7 +178,7 @@ The client never treats a gateway redirect as success — it polls/subscribes to
 
 ## 11. Route inventory summary (for `verify-routes`)
 
-~80 routes across 10 domain sections above plus better-auth's mounted paths. The
+~93 routes across 10 domain sections above plus better-auth's mounted paths. The
 checker reads every row in §1–§10 and every route mounted on `app.routes`, and asserts
 the two sets are equal in both directions — nothing documented-but-unimplemented,
 nothing implemented-but-undocumented.

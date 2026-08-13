@@ -454,15 +454,16 @@ export function updateInvoice(tx: Tx, _actor: StaffActor, invoiceId: string, inp
  *   zero rows.
  *
  * `issueInvoice` is the staff entry point (capability asserted); the customer
- * paths (COD checkout) are the zero-capability case by design and call
+ * paths (COD checkout) and the gateway webhook (phase 8, actorType `webhook`,
+ * actorId null) are the zero-capability cases by design and call
  * `issueInvoiceCore` directly — §4.14's capability enforcement lives in the
  * staff wrapper.
  */
 export function issueInvoiceCore(
   tx: Tx,
-  actor: { userId: string },
+  actor: { userId: string | null },
   invoiceId: string,
-  actorType: "staff" | "customer" = "staff",
+  actorType: "staff" | "customer" | "webhook" = "staff",
 ): InvoiceRow {
   const existing = tx.select().from(invoices).where(eq(invoices.id, invoiceId)).get();
   if (!existing) throw new HTTPException(404, { message: "not_found" });
@@ -641,8 +642,11 @@ export function listInvoices(opts: { page: number; pageSize: number }): { rows: 
 
 /**
  * Invoice detail (`api.md` §6) with the computed outstanding balance
- * (`architecture.md` §4.4): `totalPaise − (Σ in − Σ out)` over `payments` rows
- * linked to the invoice — recomputed on read, never cached.
+ * (`architecture.md` §4.4): `totalPaise − (Σ in − Σ out)` over **confirmed**
+ * `payments` rows linked to the invoice — the checkout's `pending` placeholder
+ * row has moved zero money and is excluded. Return-linked refunds carry the
+ * invoice id, so they reduce outstanding automatically. Recomputed on read,
+ * never cached.
  */
 export function getInvoice(invoiceId: string): (InvoiceWithLines & { outstandingPaise: number }) | null {
   const header = db.select().from(invoices).where(eq(invoices.id, invoiceId)).get();
@@ -662,7 +666,7 @@ export function getInvoice(invoiceId: string): (InvoiceWithLines & { outstanding
   const sums = db
     .select({ direction: payments.direction, total: payments.amountPaise })
     .from(payments)
-    .where(eq(payments.invoiceId, invoiceId))
+    .where(and(eq(payments.invoiceId, invoiceId), eq(payments.status, "confirmed")))
     .all();
   const balance = sums.reduce((acc, p) => acc + (p.direction === "in" ? p.total : -p.total), 0);
   return { ...header, items, charges, outstandingPaise: header.totalPaise - balance };
