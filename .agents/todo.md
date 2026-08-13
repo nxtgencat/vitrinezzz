@@ -11,21 +11,26 @@ stopped.** Before starting any phase and before committing it, follow `AGENTS.md
 
 ## Phase 0 — Scaffolding
 
-- [ ] Scaffold with the Bun default template: `bun init -y` — one `package.json`,
+- [x] Scaffold with the Bun default template: `bun init -y` — one `package.json`,
       `tsconfig.json`, `index.ts`, `README.md`, `@types/bun`, one `bun.lock`.
-- [ ] Harden the root `tsconfig.json` inherited from the template: `strict: true`,
+- [x] Harden the root `tsconfig.json` inherited from the template: `strict: true`,
       `types: ["bun"]`, `noUncheckedIndexedAccess`, `noUnusedLocals`,
-      `noUnusedParameters`, `verbatimModuleSyntax`.
-- [ ] Install every dependency from `architecture.md` §2 via `bun add <pkg>` (dev tools
+      `noUnusedParameters`, `verbatimModuleSyntax` (+ `esModuleInterop`, see Session
+      Log 2026-08-13).
+- [x] Install every dependency from `architecture.md` §2 via `bun add <pkg>` (dev tools
       with `bun add -d <pkg>`) — no hand-pinned versions, Bun resolves latest. TypeScript
       stays as `bun init -y` provides it (peer dependency) — no separate `bun add`.
-- [ ] Add `package.json` scripts — `dev`, `typecheck` (`bunx tsc --noEmit`), `ci` (the
-      `audit.md` §2 chain) — `bun run` / `bunx` only.
-- [ ] `lib/logger.ts` (pino singleton), `lib/db.ts` (`withTx`, WAL pragma on boot).
-- [ ] `.env.example` covering every var in `architecture.md` §4.16.
-- [ ] Verify a Chrome/Chromium/Edge binary is discoverable (`BUN_CHROME_PATH` or PATH)
-      for later PDF work.
-- [ ] Git init; initial commit.
+- [x] Add `package.json` scripts — `dev`, `typecheck` (`bunx tsc --noEmit`), `ci` (the
+      `audit.md` §2 chain) — `bun run` / `bunx` only. (`ci` grows per phase; phase 0 =
+      typecheck.)
+- [x] `lib/logger.ts` (pino singleton), `lib/db.ts` (`withTx`, WAL pragma on boot).
+- [x] `.env.example` covering every var in `architecture.md` §4.16.
+- [x] Verify a Chrome/Chromium/Edge binary is discoverable (`BUN_CHROME_PATH` or PATH)
+      for later PDF work. — **absent** in this workspace; not installed per operator
+      instruction; phase 9 exercises the documented missing-renderer non-fatal path.
+- [x] Git init; initial commit. (Repo + AGENTS.md already committed as `094c496 init`;
+      nothing further needed.)
+
 
 **Exit:** `bun run typecheck` passes on an empty `src/`; `bun run dev` boots and serves
 `GET /api/health` → `200`. Commit `phase 0: scaffolding`.
@@ -191,3 +196,4 @@ time, before starting the next phase (`AGENTS.md` §1 and §7).
 
 | Date | Phase | Note |
 | ---- | ----- | ---- |
+| 2026-08-13 | 0 — scaffolding | Exit green: `bun run typecheck` passes; `bun run dev` boots (pino log, no `console.*`) and `GET /api/health` → `200` `{"status":"ok","dbTimeMs":…,"ledgerCounts":{}}`. Deps resolved by `bun add`: drizzle-orm 0.45.2, hono 4.13.1, @hono/zod-validator 0.9.0, better-auth 1.6.27, @better-auth/drizzle-adapter 1.6.27, zod 4.4.3, pino 10.3.1, drizzle-kit 0.31.10 (dev). **Docs changed (spec-vs-resolved-version defects, AGENTS.md §4):** architecture.md §4.1 — `withTx` is an async wrapper because the resolved drizzle 0.45.x sync driver returns `T` from `db.transaction` directly (callback stays non-async; invariant T1 intact); §6 — added rows for `drizzle()` construction (`$client` on the intersection type) and pino (`export =` CJS, `esModuleInterop` added to tsconfig; §2 Language row updated). Chrome binary **not** discoverable in this workspace (BUN_CHROME_PATH empty, none on PATH) — not installed per operator instruction; PDF work in phase 9 will exercise the documented missing-renderer non-fatal path. Health stub returns `ledgerCounts: {}` until the fact tables exist; phase 10 wires the real counts. `bun run ci` currently = typecheck; grows per phase per audit.md §2. |

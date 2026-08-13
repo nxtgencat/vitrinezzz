@@ -38,7 +38,7 @@ either of them.
 | Auth | `bun add better-auth @better-auth/drizzle-adapter` (`provider: "sqlite"`) | Mounted `POST/GET /api/auth/*` via `auth.handler(c.req.raw)`; `databaseHooks.user.create.after` auto-provisions a `customers` row. |
 | Validation | `bun add zod` at the route boundary only | `z.enum([...])`, not `z.nativeEnum` (doesn't exist in v4); issues at `error.issues`. |
 | Logging | `bun add pino`, one `lib/logger.ts` singleton, `.child({ module })` per subsystem | Zero `console.*` anywhere, no exemptions. |
-| Language | TypeScript (native-port line, supplied by `bun init -y` — no `bun add`, no version pin) — `strict`, `noUncheckedIndexedAccess`, `noUnusedLocals`, `noUnusedParameters`, `verbatimModuleSyntax`, `types: ["bun"]` | TS ≥ 6 no longer auto-discovers `@types/*`. |
+| Language | TypeScript (native-port line, supplied by `bun init -y` — no `bun add`, no version pin) — `strict`, `noUncheckedIndexedAccess`, `noUnusedLocals`, `noUnusedParameters`, `verbatimModuleSyntax`, `esModuleInterop` (required to default-import CJS `export =` packages such as pino, §6), `types: ["bun"]` | TS ≥ 6 no longer auto-discovers `@types/*`. |
 | Realtime | Bun native WebSockets, one hub at `/api/ws` | `server.upgrade`, `socket.subscribe(topic)`, `server.publish(topic, msg)` — no broker. |
 | PDF | `Bun.WebView({ backend: "chrome", headless: true })` + `view.cdp("Page.printToPDF", …)` | Result object returned **directly** — payload at `result.data`, not nested under a further `{ data }`. |
 | Media | `Bun.S3` (optional, MinIO-compatible) or local `STORAGE_DIR`; `Bun.Image` for thumbnails | No image-processing library. |
@@ -88,11 +88,17 @@ synchronous — no `await` anywhere inside it, enforced by the type system:**
 
 ```ts
 // lib/db.ts
-export function withTx<T>(fn: (tx: Tx) => T): Promise<T> {
+export async function withTx<T>(fn: (tx: Tx) => T): Promise<T> {
   return db.transaction((tx) => fn(tx), { behavior: "immediate" });
 }
 // fn is declared non-async: writing `await` inside a callback is a TS syntax error.
 ```
+
+Note on the wrapper: on the resolved `drizzle-orm` 0.45.x sync driver,
+`db.transaction(...)` returns `T` synchronously (`Result<'sync', T> = T`), so `withTx`
+is an `async` function that runs the transaction body synchronously and surfaces the
+result as `Promise<T>` for route handlers to `await`. The `fn` callback itself stays
+non-async — the invariant below is about the callback, not the wrapper.
 
 Consequences, each of which the rest of this document treats as a proof, not a hope:
 
@@ -626,7 +632,9 @@ re-checked before any `bun add` re-resolution in §2 changes it.
 | Call | Exact shape used | Note |
 |---|---|---|
 | `bun:sqlite` connection | `new Database(path)`; `db.run("PRAGMA journal_mode = WAL;")` at boot | One `Database` = one connection, no pooling. |
-| Drizzle transaction | `db.transaction((tx) => fn(tx), { behavior: "immediate" })` | Issues `BEGIN IMMEDIATE`; terminal methods are synchronous — no `.sync()` variant exists. |
+| Drizzle transaction | `db.transaction((tx) => fn(tx), { behavior: "immediate" })` | Issues `BEGIN IMMEDIATE`; on the resolved 0.45.x sync driver it returns `T` directly — `withTx` is the async wrapper that routes `await` (§4.1). No `.sync()` variant exists. |
+| Drizzle bun-sqlite construction | `drizzle(sqlite)` from `drizzle-orm/bun-sqlite` | Returns `BunSQLiteDatabase & { $client: TClient }` — `$client` is the raw `bun:sqlite` `Database`; annotating the variable with the bare `BunSQLiteDatabase` type drops `$client`, so the inferred type must be kept. |
+| pino singleton | `import pino from "pino"`; `const logger = pino()` | Resolved 10.x is CJS (`export = pino`) — default import requires `esModuleInterop` (set in tsconfig, §2). `.child({ module })` per subsystem. |
 | Hono app export | `export type AppType = typeof app` | Consumed by `hc<AppType>()` on both frontends. |
 | `zValidator` error hook | `zValidator("json", schema, (result, c) => { if (!result.success) throw new HTTPException(400, { cause: result.error }); })` | Does **not** throw by default — the hook must throw explicitly, or invalid input silently 200s. Issues at `err.cause.issues`. |
 | better-auth adapter | `drizzleAdapter(db, { provider: "sqlite" })` | Owns `user`/`session`/`account`/`verification` with documented column names — no `schema:` remapping. |
