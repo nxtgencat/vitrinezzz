@@ -48,7 +48,7 @@ for (const file of files) {
   }
 }
 
-const TOOLING_ALLOWLIST = ["typescript", "@types/bun", "drizzle-kit"];
+const TOOLING_ALLOWLIST = ["typescript", "@types/bun", "drizzle-kit", "@libsql/client"];
 const DEFERRED_IMPORT_ALLOWLIST: string[] = [];
 for (const name of Object.keys(declared)) {
   if (TOOLING_ALLOWLIST.includes(name) || DEFERRED_IMPORT_ALLOWLIST.includes(name)) continue;

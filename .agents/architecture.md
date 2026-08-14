@@ -33,7 +33,7 @@ either of them.
 |---|---|---|
 | Runtime | Bun (engine, floor `^1.3.14` — not a `bun add` package) | `Bun.serve({ fetch })`; port from `$PORT` then `3000`. |
 | Database | `bun:sqlite`, one file, WAL at process start | Single writer — every concurrency/idempotency proof in §4 rests on this. |
-| ORM | `bun add drizzle-orm` (+ `drizzle-orm/bun-sqlite` subpath) + `bun add -d drizzle-kit` | `db.transaction(fn, { behavior: "immediate" })`; synchronous terminal methods only (`.all()`/`.get()`/`.run()`/`.values()` — **there is no `.sync()`**). |
+| ORM | `bun add drizzle-orm` (+ `drizzle-orm/bun-sqlite` subpath) + `bun add -d drizzle-kit` | `db.transaction(fn, { behavior: "immediate" })`; synchronous terminal methods only (`.all()`/`.get()`/`.run()`/`.values()` — **there is no `.sync()`**). Dev: `bun add -d @libsql/client` (0.17.4) — Drizzle Studio cannot drive `bun:sqlite`, so `db:studio` uses `@libsql/client`; drizzle-kit normalizes the `dbCredentials.url` to `file:` automatically. |
 | HTTP | `bun add hono @hono/zod-validator` | Exports `AppType = typeof app`; `zValidator` does **not** throw by default — the hook must `throw new HTTPException(400, { cause: result.error })`. |
 | Auth | `bun add better-auth @better-auth/drizzle-adapter` (`provider: "sqlite"`) | Mounted `POST/GET /api/auth/*` via `auth.handler(c.req.raw)`; `databaseHooks.user.create.after` auto-provisions a `customers` row. |
 | Validation | `bun add zod` at the route boundary only | `z.enum([...])`, not `z.nativeEnum` (doesn't exist in v4); issues at `error.issues`. |
