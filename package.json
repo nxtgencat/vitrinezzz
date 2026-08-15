@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun --watch index.ts",
     "typecheck": "bunx tsc --noEmit",
+    "migrate:legacy": "bun run scripts/migrate-legacy.ts",
     "db:generate": "bunx drizzle-kit generate",
     "db:studio": "bunx drizzle-kit studio",
     "verify:db": "bun run scripts/verify-db.ts",
